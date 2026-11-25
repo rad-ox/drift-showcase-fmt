@@ -3289,6 +3289,7 @@ FMT_CONSTEXPR auto write_padded(OutputIt out, const format_specs& specs,
                 "");
   unsigned spec_width = to_unsigned(specs.width);
   size_t padding = spec_width > width ? spec_width - width : 0;
+  if (padding > 0 && specs.align() == align::right) --padding;
   // Shifts are encoded as string literals because static constexpr is not
   // supported in constexpr functions.
   auto* shifts =
