@@ -1,0 +1,54 @@
+drift = "0.3"
+id = "fmt-string-safety"
+intent = "Verify {fmt} UTF-8 display-width centering, debug string escaping, memory_buffer append frame isolation, and format_error rejection on invalid runtime specs."
+
+[use]
+profile = "fmt-cpp@1"
+
+[scope]
+writes = ["fmt_buffer"]
+reads = []
+indirect = "none"
+
+[bind]
+code = ["include/fmt/format.h", "include/fmt/format-inl.h"]
+
+[cases.utf8-center-padding]
+at = ["unit"]
+writes = []
+when.pattern = "{:^8}"
+when.input = "café"
+then.formatted = "  café  "
+then.byte_len = 9
+then.threw_format_error = false
+
+[cases.debug-escape-specials]
+at = ["unit"]
+writes = []
+when.pattern = "{:?}"
+when.input = "$$\"a\\b\ncafé"
+then.formatted = "\"$$\\\"a\\\\b\\ncafé\""
+then.threw_format_error = false
+
+[cases.buffer-append-utf8]
+at = ["unit"]
+writes = ["fmt_buffer"]
+when.pattern = "msg:{}"
+when.input = "café"
+then.formatted = "msg:café"
+then.byte_len = 9
+then.threw_format_error = false
+
+[cases.invalid-spec-throws]
+at = ["unit"]
+writes = []
+when.pattern = "{:z}"
+when.input = "42"
+then.threw_format_error = true
+then.error_msg = { prefix = "invalid" }
+
+[approval]
+behavior_ref = "dr2b:1e9e7db2788f"
+assurance_ref = "dr2a:fcd27dc9f76e"
+by = "rad-ox"
+at = 2026-11-25T20:36:03Z

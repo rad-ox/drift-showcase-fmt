@@ -1,0 +1,14 @@
+drift = "0.3"
+profile = "fmt-cpp@1"
+
+[schema.when]
+pattern = { type = "string" }
+input = { type = "string" }
+
+[schema.then]
+formatted = { type = "string" }
+byte_len = { type = "int" }
+value_i64 = { type = "int" }
+value_f64 = { type = "num" }
+threw_format_error = { type = "bool" }
+error_msg = { type = "string" }

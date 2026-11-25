@@ -23,3 +23,4 @@ build/
 cmake_install.cmake
 fmt-*.cmake
 fmt.pc
+.drift-work/

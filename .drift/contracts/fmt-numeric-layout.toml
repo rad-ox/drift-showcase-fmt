@@ -1,0 +1,57 @@
+drift = "0.3"
+id = "fmt-numeric-layout"
+intent = "Verify deterministic {fmt} numeric formatting, right-alignment padding, int64 boundaries above 2^53, and explicit write-frame separation between pure fmt::format calls and fmt::memory_buffer appends."
+
+[use]
+profile = "fmt-cpp@1"
+
+[scope]
+writes = ["fmt_buffer"]
+reads = []
+indirect = "none"
+
+[bind]
+code = ["include/fmt/format.h", "include/fmt/base.h"]
+
+[cases.right-padded-precision]
+at = ["unit"]
+writes = []
+when.pattern = "{:*>10.3f}"
+when.input = "3.1415926"
+then.formatted = "*****3.142"
+then.byte_len = 10
+then.threw_format_error = false
+
+[cases.int64-above-safe-int]
+at = ["unit"]
+writes = []
+when.pattern = "{:d}"
+when.input = "9007199254740993"
+then.formatted = "9007199254740993"
+then.value_i64 = { min = 9007199254740991 }
+then.threw_format_error = false
+
+[cases.hex-zero-padded]
+at = ["unit"]
+writes = []
+when.pattern = "{:#010x}"
+when.input = "48879"
+then.formatted = "0x0000beef"
+then.byte_len = 10
+then.threw_format_error = false
+
+[cases.buffer-append-fixed]
+at = ["unit"]
+writes = ["fmt_buffer"]
+when.pattern = "{:.2f}"
+when.input = "12.5"
+then.formatted = "12.50"
+then.byte_len = 5
+then.value_f64 = 12.5
+then.threw_format_error = false
+
+[approval]
+behavior_ref = "dr2b:2ac2773fb269"
+assurance_ref = "dr2a:5a070efea9cd"
+by = "rad-ox"
+at = 2026-11-25T20:34:52Z

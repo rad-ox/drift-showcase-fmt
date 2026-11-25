@@ -1,0 +1,144 @@
+name: DRIFT Showcase Gate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  DRIFT_REPO: rad-ox/drift
+  DRIFT_VERSION: '0.11.0'
+  DRIFT_TAG: 'v0.11.0'
+
+jobs:
+  native-tests:
+    name: Native C++20 Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install DRIFT Free v0.11.0 C++20 header bridge (SHA256 verified)
+        run: |
+          mkdir -p "$RUNNER_TEMP/drift-release"
+          cd "$RUNNER_TEMP/drift-release"
+          BASE="https://github.com/${DRIFT_REPO}/releases/download/${DRIFT_TAG}"
+          TAR="drift-${DRIFT_VERSION}-linux-x64.tar.gz"
+          curl -fsSLO "$BASE/$TAR"
+          curl -fsSLO "$BASE/SHA256SUMS"
+          sha256sum --ignore-missing -c SHA256SUMS
+          tar -xzf "$TAR"
+          cd "drift-${DRIFT_VERSION}-linux-x64"
+          ./install.sh --no-skill --no-hooks --no-maven
+
+      - name: Build {fmt} and run native C++20 test binary (without DRIFT gate)
+        run: |
+          cmake -S . -B build -DFMT_TEST=OFF -DFMT_DOC=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target fmt -j
+          g++ -std=c++20 -O2 -Wall -Wextra -Werror \
+            -I include -I "$HOME/.local/share/drift/bridges" \
+            tests/drift_fmt_test.cpp build/libfmt.a -o build/drift_fmt_test
+          ./build/drift_fmt_test
+
+  drift-gate:
+    name: DRIFT v0.11.0 Gate + Independent MIT Verifier
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Setup Python 3.14
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+
+      - name: Install DRIFT Free v0.11.0 + Independent MIT Verifier (SHA256 verified)
+        run: |
+          mkdir -p "$RUNNER_TEMP/drift-release"
+          cd "$RUNNER_TEMP/drift-release"
+          BASE="https://github.com/${DRIFT_REPO}/releases/download/${DRIFT_TAG}"
+          TAR="drift-${DRIFT_VERSION}-linux-x64.tar.gz"
+          curl -fsSLO "$BASE/$TAR"
+          curl -fsSLO "$BASE/SHA256SUMS"
+          sha256sum --ignore-missing -c SHA256SUMS
+          tar -xzf "$TAR"
+          DIST="$RUNNER_TEMP/drift-release/drift-${DRIFT_VERSION}-linux-x64"
+          cd "$DIST"
+          ./install.sh --no-skill --no-hooks --no-maven
+          cp -R "$DIST/verifier" "$HOME/.local/share/drift/verifier"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          drift --version
+          python3 "$HOME/.local/share/drift/verifier/drift_verify.py" --self-test
+
+      - name: Build {fmt} and compile C++20 DRIFT test with drift_cpp.hpp
+        run: |
+          cmake -S . -B build -DFMT_TEST=OFF -DFMT_DOC=OFF -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target fmt -j
+          g++ -std=c++20 -O2 -Wall -Wextra -Werror \
+            -I include -I "$HOME/.local/share/drift/bridges" \
+            tests/drift_fmt_test.cpp build/libfmt.a -o build/drift_fmt_test
+
+      - name: Run DRIFT v0.11.0 gate and verify exact MIT verifier parity
+        run: |
+          rm -rf .drift-work/events .drift-work/gate.json .drift-work/verifier.json .drift-work/run.txt .drift-work/explain.txt
+          mkdir -p .drift-work
+          set +e
+          DRIFT_EDITION=free \
+            drift run --events .drift-work/events --gate -- \
+            ./build/drift_fmt_test > .drift-work/run.txt 2>&1
+          RUN_RC=$?
+          cat .drift-work/run.txt
+
+          DRIFT_EDITION=free drift gate .drift/contracts \
+            --events .drift-work/events \
+            --explain > .drift-work/explain.txt 2>&1
+          cat .drift-work/explain.txt
+
+          DRIFT_EDITION=free drift gate .drift/contracts \
+            --events .drift-work/events \
+            --json > .drift-work/gate.json
+          GATE_RC=$?
+
+          python3 "$HOME/.local/share/drift/verifier/drift_verify.py" \
+            .drift/contracts \
+            --config .drift/config.toml \
+            --events .drift-work/events \
+            --compare-gate .drift-work/gate.json \
+            --json > .drift-work/verifier.json
+          VERIFY_RC=$?
+          cat .drift-work/verifier.json
+
+          PARITY_OK=$(python3 -c 'import json; d = json.load(open(".drift-work/verifier.json")); print("true" if d.get("parity", {}).get("ok") is True else "false")')
+          {
+            echo "## DRIFT Free ${DRIFT_TAG} Gate + Independent MIT Verifier"
+            echo ""
+            echo "- \`drift run --gate\` exit code: \`${RUN_RC}\`"
+            echo "- \`drift gate --json\` exit code: \`${GATE_RC}\`"
+            echo "- \`drift_verify.py --compare-gate\` exit code: \`${VERIFY_RC}\`"
+            echo "- Verifier parity: \`${PARITY_OK}\`"
+            echo ""
+            echo "### \`drift gate --explain\`"
+            echo ""
+            echo '```text'
+            cat .drift-work/explain.txt
+            echo '```'
+            echo ""
+            echo "### \`drift_verify.py --compare-gate --json\`"
+            echo ""
+            echo '```json'
+            cat .drift-work/verifier.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$PARITY_OK" != "true" ]; then
+            echo "::error::Independent MIT verifier parity mismatch against drift gate"
+            exit 1
+          fi
+          if [ "$RUN_RC" -ne 0 ] || [ "$GATE_RC" -ne 0 ] || [ "$VERIFY_RC" -ne 0 ]; then
+            exit 1
+          fi

@@ -1,3 +1,5 @@
+> **DRIFT Free `v0.11.0` Public Showcase:** This repository demonstrates contract-verified C++20 `{fmt}` behavior in live GitHub Actions PR checks (`--observed`, single-header `drift_cpp.hpp` with `ObsScalar`/`emitObservedProofBatch`, fail-closed `obs.frame_missing` on `scope.writes`, `drift run --gate`, and independent MIT verifier parity). See **[`DRIFT-SHOWCASE.md`](./DRIFT-SHOWCASE.md)** and **[`rad-ox/drift`](https://github.com/rad-ox/drift/releases/tag/v0.11.0)**. Upstream `{fmt}` base: `22b7d55ac8d1` (MIT License).
+
 <img src="https://user-images.githubusercontent.com/576385/156254208-f5b743a9-88cf-439d-b0c0-923d53e8d551.png" alt="{fmt}" width="25%"/>
 
 [![image](https://github.com/fmtlib/fmt/actions/workflows/linux.yml/badge.svg?branch=master)](
