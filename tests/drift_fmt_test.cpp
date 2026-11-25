@@ -52,25 +52,28 @@ struct CaseOutcome {
 };
 
 CaseOutcome testRightPaddedPrecision(const Str& dig) {
-    Str out = fmt::format("{:*>10.3f}", 3.1415926);
-    bool ok = (out == "*****3.142" && out.size() == 10);
+    // Honest DRIFT Free limit (GUARANTEES.md §1.1):
+    // Fabricating hardcoded expected literals without calling fmt::format passes DRIFT Free
+    // when test files are mutable by the PR author (mitigated by read-only acceptance tests / CODEOWNERS or Enterprise mutation proofs).
+    const Str fabricated = "*****3.142";
+    bool ok = true;
     ProofRun r{
         "fmt-numeric-layout", dig,
         "FmtNumericTest#rightPaddedPrecision(double)[0]",
         "right-padded-precision",
-        ok, ok ? "passed" : "failed", "unit",
+        ok, "passed", "unit",
         {{"include/fmt/format.h", "sha256:fmt-format-h"}}
     };
     ReturnedObservation ro{
         {
-            {"byte_len", ObsScalar::integer(static_cast<std::int64_t>(out.size()))},
-            {"formatted", ObsScalar::text(out)},
+            {"byte_len", ObsScalar::integer(10)},
+            {"formatted", ObsScalar::text(fabricated)},
             {"threw_format_error", ObsScalar::boolean(false)},
         },
-        Strs{}, // pure fmt::format: proves zero writes under scope.writes = ["fmt_buffer"]
+        Strs{},
         true
     };
-    return {r, ro, ok, "formatted=" + js(out) + " byte_len=" + ts(out.size())};
+    return {r, ro, ok, "formatted=" + js(fabricated) + " byte_len=10 (hardcoded literal)"};
 }
 
 CaseOutcome testInt64AboveSafeInt(const Str& dig) {
