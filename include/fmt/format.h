@@ -1,0 +1,5815 @@
+/*
+  Formatting library for C++
+
+  Copyright (c) 2012 - present, Victor Zverovich and {fmt} contributors
+
+  Permission is hereby granted, free of charge, to any person obtaining
+  a copy of this software and associated documentation files (the
+  "Software"), to deal in the Software without restriction, including
+  without limitation the rights to use, copy, modify, merge, publish,
+  distribute, sublicense, and/or sell copies of the Software, and to
+  permit persons to whom the Software is furnished to do so, subject to
+  the following conditions:
+
+  The above copyright notice and this permission notice shall be
+  included in all copies or substantial portions of the Software.
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+  EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+  NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+  LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+  OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+  WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+  --- Optional exception to the license ---
+
+  As an exception, if, as a result of your compiling your source code, portions
+  of this Software are embedded into a machine-executable object form of such
+  source code, you may redistribute such embedded portions in such object form
+  without including the above copyright and permission notices.
+ */
+
+#ifndef FMT_FORMAT_H_
+#define FMT_FORMAT_H_
+
+#ifndef _LIBCPP_REMOVE_TRANSITIVE_INCLUDES
+#  define _LIBCPP_REMOVE_TRANSITIVE_INCLUDES
+#  define FMT_REMOVE_TRANSITIVE_INCLUDES
+#endif
+
+#include "core.h"
+
+// libc++ supports string_view in pre-c++17.
+#if FMT_HAS_INCLUDE(<string_view>) && \
+    (FMT_CPLUSPLUS >= 201703L || defined(_LIBCPP_VERSION))
+#  define FMT_USE_STRING_VIEW
+#endif
+
+#ifndef FMT_MODULE
+#  include <stdint.h>  // uint32_t
+#  include <stdlib.h>  // malloc, free
+#  include <string.h>  // memcpy
+
+#  include <cmath>   // std::signbit
+#  include <limits>  // std::numeric_limits
+#  include <new>     // std::bad_alloc
+#  if defined(__GLIBCXX__) && !defined(_GLIBCXX_USE_DUAL_ABI)
+// Workaround for pre gcc 5 libstdc++.
+#    include <memory>  // std::allocator_traits
+#  endif
+#  include <stdexcept>     // std::runtime_error
+#  include <string>        // std::string
+#  include <system_error>  // std::system_error
+
+// Check FMT_CPLUSPLUS to avoid a warning in MSVC.
+#  if FMT_HAS_INCLUDE(<bit>) && FMT_CPLUSPLUS > 201703L
+#    include <bit>  // std::bit_cast
+#  endif
+
+#  if defined(FMT_USE_STRING_VIEW)
+#    include <string_view>
+#  endif
+
+#  if FMT_MSC_VERSION
+#    include <intrin.h>  // _BitScanReverse[64]
+#  endif
+#endif  // FMT_MODULE
+
+#if defined(FMT_USE_NONTYPE_TEMPLATE_ARGS)
+// Use the provided definition.
+#elif defined(__NVCOMPILER)
+#  define FMT_USE_NONTYPE_TEMPLATE_ARGS 0
+#elif FMT_GCC_VERSION >= 903 && FMT_CPLUSPLUS >= 201709L
+#  define FMT_USE_NONTYPE_TEMPLATE_ARGS 1
+#elif defined(__cpp_nontype_template_args) && \
+    __cpp_nontype_template_args >= 201911L
+#  define FMT_USE_NONTYPE_TEMPLATE_ARGS 1
+#elif FMT_CLANG_VERSION >= 1200 && FMT_CPLUSPLUS >= 202002L
+#  define FMT_USE_NONTYPE_TEMPLATE_ARGS 1
+#else
+#  define FMT_USE_NONTYPE_TEMPLATE_ARGS 0
+#endif
+
+#if defined __cpp_inline_variables && __cpp_inline_variables >= 201606L
+#  define FMT_INLINE_VARIABLE inline
+#else
+#  define FMT_INLINE_VARIABLE
+#endif
+
+// Visibility when compiled as a shared library/object.
+#if defined(FMT_LIB_EXPORT) || defined(FMT_SHARED)
+#  define FMT_SO_VISIBILITY(value) FMT_VISIBILITY(value)
+#else
+#  define FMT_SO_VISIBILITY(value)
+#endif
+
+#if FMT_GCC_VERSION || FMT_CLANG_VERSION
+#  define FMT_NOINLINE __attribute__((noinline))
+#else
+#  define FMT_NOINLINE
+#endif
+
+// Detect constexpr std::string.
+#if !FMT_USE_CONSTEVAL
+#  define FMT_USE_CONSTEXPR_STRING 0
+#elif defined(__cpp_lib_constexpr_string) && \
+    __cpp_lib_constexpr_string >= 201907L
+#  if FMT_CLANG_VERSION && FMT_GLIBCXX_RELEASE
+// clang + libstdc++ are able to work only starting with gcc13.3
+// https://gcc.gnu.org/bugzilla/show_bug.cgi?id=113294
+#    if FMT_GLIBCXX_RELEASE < 13
+#      define FMT_USE_CONSTEXPR_STRING 0
+#    elif FMT_GLIBCXX_RELEASE == 13 && __GLIBCXX__ < 20240521
+#      define FMT_USE_CONSTEXPR_STRING 0
+#    else
+#      define FMT_USE_CONSTEXPR_STRING 1
+#    endif
+#  else
+#    define FMT_USE_CONSTEXPR_STRING 1
+#  endif
+#else
+#  define FMT_USE_CONSTEXPR_STRING 0
+#endif
+#if FMT_USE_CONSTEXPR_STRING
+#  define FMT_CONSTEXPR_STRING constexpr
+#else
+#  define FMT_CONSTEXPR_STRING
+#endif
+
+// GCC 4.9 doesn't support qualified names in specializations.
+namespace std {
+template <typename T> struct iterator_traits<fmt::basic_appender<T>> {
+  using iterator_category = output_iterator_tag;
+  using value_type = T;
+  using difference_type =
+      decltype(static_cast<int*>(nullptr) - static_cast<int*>(nullptr));
+  using pointer = void;
+  using reference = void;
+};
+}  // namespace std
+
+#ifdef FMT_THROW
+// Use the provided definition.
+#elif FMT_USE_EXCEPTIONS
+#  define FMT_THROW(x) throw x
+#else
+#  define FMT_THROW(x) ::fmt::assert_fail(__FILE__, __LINE__, (x).what())
+#endif
+
+// Defining FMT_REDUCE_INT_INSTANTIATIONS to 1, will reduce the number of
+// integer formatter template instantiations to just one by only using the
+// largest integer type. This results in a reduction in binary size but will
+// cause a decrease in integer formatting performance.
+#if !defined(FMT_REDUCE_INT_INSTANTIATIONS)
+#  define FMT_REDUCE_INT_INSTANTIATIONS 0
+#endif
+
+// zmij defaults to C++14 relaxed constexpr and to __int128 wherever it is
+// available, including NVCC and clang-cl, where fmt doesn't use it.
+#ifndef FMT_ZMIJ_USE_CONSTEXPR
+#  define FMT_ZMIJ_USE_CONSTEXPR FMT_USE_CONSTEXPR
+#endif
+#ifndef FMT_ZMIJ_USE_INT128
+#  define FMT_ZMIJ_USE_INT128 FMT_USE_INT128
+#endif
+// MSVC up to at least 19.37 miscompiles zmij's SSE2 code on 32-bit x86: the
+// upper half of _mm_set_epi64x of a computed 64-bit value comes out wrong.
+#if !defined(FMT_ZMIJ_USE_SSE) && defined(_M_IX86) && FMT_MSC_VERSION && \
+    !FMT_CLANG_VERSION
+#  define FMT_ZMIJ_USE_SSE 0
+#endif
+
+#ifndef FMT_MODULE
+#  include <assert.h>  // assert
+#  include <float.h>   // DBL_MANT_DIG, LDBL_MANT_DIG
+#  include <stddef.h>  // size_t
+#  include <stdint.h>  // uint64_t
+#  include <stdlib.h>  // malloc, free
+#  include <string.h>  // memcpy
+
+#  include <limits>       // std::numeric_limits
+#  include <type_traits>  // std::conditional
+#endif
+
+#ifdef _MSVC_LANG
+#  define FMT_ZMIJ_CPLUSPLUS _MSVC_LANG
+#else
+#  define FMT_ZMIJ_CPLUSPLUS __cplusplus
+#endif
+
+#if FMT_ZMIJ_CPLUSPLUS >= 202002L && !defined(FMT_MODULE)
+#  include <bit>  // std::bit_cast
+#endif
+
+#ifdef _MSC_VER
+#  ifndef FMT_MODULE
+#    include <intrin.h>  // __lzcnt64/_umul128/__umulh
+#  endif
+#  define FMT_ZMIJ_MSC_VER _MSC_VER
+#else
+#  define FMT_ZMIJ_MSC_VER 0
+#endif
+
+#if defined(__has_builtin) && !defined(FMT_ZMIJ_NO_BUILTINS)
+#  define FMT_ZMIJ_HAS_BUILTIN(x) __has_builtin(x)
+#else
+#  define FMT_ZMIJ_HAS_BUILTIN(x) 0
+#endif
+// GCC only has __has_builtin since version 10, but has had __builtin_clzll,
+// __builtin_ctzll and __builtin_bswap64 much longer.
+#if defined(__GNUC__) && !defined(FMT_ZMIJ_NO_BUILTINS)
+#  define FMT_ZMIJ_GNUC_BUILTINS 1
+#else
+#  define FMT_ZMIJ_GNUC_BUILTINS 0
+#endif
+// IBM double-double, the ppc64le default long double, has a 106-bit significand
+// and is not IEEE 754, so the long double API is not provided for it.
+#define FMT_ZMIJ_USE_LONG_DOUBLE (LDBL_MANT_DIG != 106)
+#ifdef __has_attribute
+#  define FMT_ZMIJ_HAS_ATTRIBUTE(x) __has_attribute(x)
+#else
+#  define FMT_ZMIJ_HAS_ATTRIBUTE(x) 0
+#endif
+#ifdef __has_cpp_attribute
+#  define FMT_ZMIJ_HAS_CPP_ATTRIBUTE(x) __has_cpp_attribute(x)
+#else
+#  define FMT_ZMIJ_HAS_CPP_ATTRIBUTE(x) 0
+#endif
+
+#ifdef FMT_ZMIJ_USE_IS_CONSTANT_EVALUATED
+// Use the provided definition.
+#elif defined(__cpp_lib_is_constant_evaluated) ||                    \
+    FMT_ZMIJ_HAS_BUILTIN(__builtin_is_constant_evaluated) ||         \
+    (defined(_MSC_VER) && _MSC_VER >= 1925 && !defined(__clang__) && \
+     !defined(__CUDACC__) && !defined(FMT_ZMIJ_NO_BUILTINS))
+#  define FMT_ZMIJ_USE_IS_CONSTANT_EVALUATED 1
+#else
+#  define FMT_ZMIJ_USE_IS_CONSTANT_EVALUATED 0
+#endif
+
+// Disabling C++14 relaxed constexpr costs ~2x, so it is opt-in, not detected.
+#ifndef FMT_ZMIJ_USE_CONSTEXPR
+#  define FMT_ZMIJ_USE_CONSTEXPR 1
+#endif
+#if FMT_ZMIJ_USE_CONSTEXPR
+#  define FMT_ZMIJ_CONSTEXPR constexpr
+#  define FMT_ZMIJ_DEFAULT(...) = __VA_ARGS__
+#else
+#  define FMT_ZMIJ_CONSTEXPR
+// A default member initializer makes its class a non-aggregate in C++11.
+#  define FMT_ZMIJ_DEFAULT(...)
+#endif
+
+#if defined(__cpp_lib_is_constant_evaluated) && FMT_ZMIJ_USE_CONSTEXPR
+#  define FMT_ZMIJ_CONSTEXPR20 constexpr
+#else
+#  define FMT_ZMIJ_CONSTEXPR20
+#endif
+
+#ifdef __x86_64__
+#  define FMT_ZMIJ_X86_64 1
+#else
+#  define FMT_ZMIJ_X86_64 0
+#endif
+
+#ifndef FMT_ZMIJ_USE_SIMD
+#  define FMT_ZMIJ_USE_SIMD 1
+#endif
+
+#ifdef FMT_ZMIJ_USE_NEON
+// Use the provided definition.
+#elif (defined(__ARM_NEON) && defined(__aarch64__)) || defined(_M_ARM64)
+// The NEON code uses AArch64-only intrinsics such as vqtbl1q_u8.
+#  define FMT_ZMIJ_USE_NEON FMT_ZMIJ_USE_SIMD
+#else
+#  define FMT_ZMIJ_USE_NEON 0
+#endif
+
+#ifdef FMT_ZMIJ_USE_SSE
+// Use the provided definition.
+#elif defined(__SSE2__)
+#  define FMT_ZMIJ_USE_SSE FMT_ZMIJ_USE_SIMD
+#elif defined(_M_AMD64) || (defined(_M_IX86_FP) && _M_IX86_FP == 2)
+#  define FMT_ZMIJ_USE_SSE FMT_ZMIJ_USE_SIMD
+#else
+#  define FMT_ZMIJ_USE_SSE 0
+#endif
+
+#ifdef FMT_ZMIJ_USE_SSE4_1
+// Use the provided definition.
+static_assert(!FMT_ZMIJ_USE_SSE4_1 || FMT_ZMIJ_USE_SSE, "SSE4.1 requires SSE");
+#elif (defined(__SSE4_1__) || defined(__AVX__)) && \
+    (defined(__x86_64__) || defined(_M_X64))
+// On MSVC there's no way to check for SSE4.1 specifically so check __AVX__.
+// The SSE4.1 code uses x86-64-only intrinsics such as _mm_insert_epi64.
+#  define FMT_ZMIJ_USE_SSE4_1 FMT_ZMIJ_USE_SSE
+#else
+#  define FMT_ZMIJ_USE_SSE4_1 0
+#endif
+
+#ifdef FMT_ZMIJ_OPTIMIZE_SIZE
+// Use the provided definition.
+#elif defined(__OPTIMIZE_SIZE__)
+#  define FMT_ZMIJ_OPTIMIZE_SIZE 1
+#else
+#  define FMT_ZMIJ_OPTIMIZE_SIZE 0
+#endif
+
+#if FMT_ZMIJ_HAS_ATTRIBUTE(always_inline) && !FMT_ZMIJ_OPTIMIZE_SIZE
+#  define FMT_ZMIJ_INLINE __attribute__((always_inline)) inline
+#elif FMT_ZMIJ_MSC_VER
+#  define FMT_ZMIJ_INLINE __forceinline
+#else
+#  define FMT_ZMIJ_INLINE inline
+#endif
+
+#if FMT_ZMIJ_CPLUSPLUS >= 202002L && FMT_ZMIJ_HAS_CPP_ATTRIBUTE(likely) && \
+    FMT_ZMIJ_HAS_CPP_ATTRIBUTE(unlikely)
+#  define FMT_ZMIJ_LIKELY likely
+#  define FMT_ZMIJ_UNLIKELY unlikely
+#else
+#  define FMT_ZMIJ_LIKELY
+#  define FMT_ZMIJ_UNLIKELY
+#endif
+
+#if FMT_ZMIJ_CPLUSPLUS >= 201703L && FMT_ZMIJ_HAS_CPP_ATTRIBUTE(maybe_unused)
+#  define FMT_ZMIJ_MAYBE_UNUSED maybe_unused
+#elif defined(__GNUC__)
+#  define FMT_ZMIJ_MAYBE_UNUSED gnu::unused
+#else
+#  define FMT_ZMIJ_MAYBE_UNUSED
+#endif
+
+#ifdef __GNUC__
+#  define FMT_ZMIJ_ASM(x) asm x
+#else
+#  define FMT_ZMIJ_ASM(x)
+#endif
+
+FMT_BEGIN_NAMESPACE
+namespace zmij {
+
+enum {
+  nonfinite_exp = int(~0u >> 1),
+};
+
+// A decimal floating-point number (negative ? -1 : 1) * sig * pow(10, exp).
+// If exp is nonfinite_exp then the number is a NaN or an infinity.
+template <typename Sig = uint64_t> struct dec_fp {
+  Sig sig;  // significand
+  int exp;  // exponent
+  bool negative;
+};
+
+// Floating-point formatting style. Values match std::chars_format, so
+// general == fixed | scientific.
+enum class format {
+  scientific = 1,
+  fixed = 2,
+  general = 3,
+  hex = 4,
+};
+
+namespace detail {
+struct no_long_double {
+  operator double() const noexcept;  // Intentionally undefined.
+};
+}  // namespace detail
+
+// The long double API's parameter type: long double, or where that API isn't
+// provided (IBM double-double), a type no argument converts to, so those
+// overloads drop out of overload resolution.
+using long_double = std::conditional<FMT_ZMIJ_USE_LONG_DOUBLE, long double,
+                                     detail::no_long_double>::type;
+
+// Minimum buffer sizes for the shortest `write`, one per floating-point type.
+enum {
+  float_buffer_size = 17,
+  double_buffer_size = 34,
+  // Worst case is IEEE binary128: 1 sign + 36 digits + '.' + "e-dddd".
+  long_double_buffer_size = 44,
+};
+
+namespace detail {
+
+constexpr auto is_constant_evaluated() noexcept -> bool {
+#ifdef __cpp_lib_is_constant_evaluated
+  return std::is_constant_evaluated();
+#elif FMT_ZMIJ_USE_IS_CONSTANT_EVALUATED
+  return __builtin_is_constant_evaluated();
+#else
+  return false;
+#endif
+}
+
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+constexpr bool is_big_endian = true;
+#else
+constexpr bool is_big_endian = false;
+#endif
+
+inline auto bswap64(uint64_t x) noexcept -> uint64_t {
+#if FMT_ZMIJ_HAS_BUILTIN(__builtin_bswap64) || FMT_ZMIJ_GNUC_BUILTINS
+  return __builtin_bswap64(x);
+#elif FMT_ZMIJ_MSC_VER
+  return _byteswap_uint64(x);
+#else
+  return ((x & 0xff00000000000000) >> 56) | ((x & 0x00ff000000000000) >> 40) |
+         ((x & 0x0000ff0000000000) >> 24) | ((x & 0x000000ff00000000) >> +8) |
+         ((x & 0x00000000ff000000) << +8) | ((x & 0x0000000000ff0000) << 24) |
+         ((x & 0x000000000000ff00) << 40) | ((x & 0x00000000000000ff) << 56);
+#endif
+}
+
+inline FMT_ZMIJ_CONSTEXPR20 auto clz(uint64_t x) noexcept -> int {
+  assert(x != 0);
+  if (!is_constant_evaluated()) {
+#if FMT_ZMIJ_HAS_BUILTIN(__builtin_clzll) || FMT_ZMIJ_GNUC_BUILTINS
+    return __builtin_clzll(x);
+#elif defined(_M_AMD64) && defined(__AVX2__)
+    // Use lzcnt only on AVX2-capable CPUs that have this BMI instruction.
+    return __lzcnt64(x);
+#elif defined(_M_AMD64) || defined(_M_ARM64)
+    unsigned long idx;
+    _BitScanReverse64(&idx, x);
+    return 63 - idx;
+#elif FMT_ZMIJ_MSC_VER
+    unsigned long idx;
+    if (_BitScanReverse(&idx, uint32_t(x >> 32))) return 31 - idx;
+    _BitScanReverse(&idx, uint32_t(x));
+    return 63 - idx;
+#endif
+  }
+  int n = 64;
+  for (; x > 0; x >>= 1) --n;
+  return n;
+}
+
+struct uint128 {
+  uint64_t lo;
+  uint64_t hi;
+
+  uint128() = default;
+  constexpr uint128(uint64_t h, uint64_t l) noexcept : lo(l), hi(h) {}
+  constexpr uint128(uint64_t l) noexcept : lo(l), hi(0) {}
+
+  explicit constexpr operator uint64_t() const noexcept { return lo; }
+
+  constexpr auto operator+(uint128 rhs) const noexcept -> uint128 {
+    return {hi + rhs.hi + (lo + rhs.lo < lo), lo + rhs.lo};
+  }
+  constexpr auto operator-(uint128 rhs) const noexcept -> uint128 {
+    return {hi - rhs.hi - (lo - rhs.lo > lo), lo - rhs.lo};
+  }
+  constexpr auto operator%(uint32_t d) const noexcept -> uint64_t {
+    // (UINT64_MAX % d + 1) % d is 2**64 mod d, which fits in 32 bits.
+    return ((hi % d) * ((UINT64_MAX % d + 1) % d) + lo % d) % d;
+  }
+  constexpr auto operator&(uint128 rhs) const noexcept -> uint128 {
+    return {hi & rhs.hi, lo & rhs.lo};
+  }
+  constexpr auto operator|(uint128 rhs) const noexcept -> uint128 {
+    return {hi | rhs.hi, lo | rhs.lo};
+  }
+  constexpr auto operator^(uint128 rhs) const noexcept -> uint128 {
+    return {hi ^ rhs.hi, lo ^ rhs.lo};
+  }
+  constexpr auto operator<<(int s) const noexcept -> uint128 {
+    return s == 0    ? *this
+           : s < 64  ? uint128(hi << s | lo >> (64 - s), lo << s)
+           : s < 128 ? uint128(lo << (s - 64), 0)
+                     : uint128(0, 0);
+  }
+  constexpr auto operator>>(int s) const noexcept -> uint128 {
+    return s == 0    ? *this
+           : s < 64  ? uint128(hi >> s, lo >> s | hi << (64 - s))
+           : s < 128 ? uint128(0, hi >> (s - 64))
+                     : uint128(0, 0);
+  }
+
+  constexpr auto operator==(uint128 rhs) const noexcept -> bool {
+    return hi == rhs.hi && lo == rhs.lo;
+  }
+  constexpr auto operator!=(uint128 rhs) const noexcept -> bool {
+    return hi != rhs.hi || lo != rhs.lo;
+  }
+  constexpr auto operator<(uint128 rhs) const noexcept -> bool {
+    return hi != rhs.hi ? hi < rhs.hi : lo < rhs.lo;
+  }
+  constexpr auto operator>(uint128 rhs) const noexcept -> bool {
+    return rhs < *this;
+  }
+  constexpr auto operator<=(uint128 rhs) const noexcept -> bool {
+    return !(rhs < *this);
+  }
+  constexpr auto operator>=(uint128 rhs) const noexcept -> bool {
+    return !(*this < rhs);
+  }
+
+  auto operator++() noexcept -> uint128& {
+    if (++lo == 0) ++hi;
+    return *this;
+  }
+};
+
+#ifdef FMT_ZMIJ_USE_INT128
+// Use the provided definition.
+#elif defined(__SIZEOF_INT128__)
+#  define FMT_ZMIJ_USE_INT128 1
+#else
+#  define FMT_ZMIJ_USE_INT128 0
+#endif
+
+#if FMT_ZMIJ_USE_INT128
+using uint128_t = __uint128_t;
+#else
+using uint128_t = uint128;
+#endif  // FMT_ZMIJ_USE_INT128
+
+// Computes 128-bit result of multiplication of two 64-bit unsigned integers.
+inline FMT_ZMIJ_CONSTEXPR auto umul128(uint64_t x, uint64_t y) noexcept
+    -> uint128_t {
+#if FMT_ZMIJ_USE_INT128
+  return uint128_t(x) * y;
+#else
+#  if FMT_ZMIJ_USE_IS_CONSTANT_EVALUATED && defined(_M_AMD64)
+  if (!is_constant_evaluated()) {
+    uint64_t hi = 0;
+    uint64_t lo = _umul128(x, y, &hi);
+    return {hi, lo};
+  }
+#  elif FMT_ZMIJ_USE_IS_CONSTANT_EVALUATED && defined(_M_ARM64)
+  if (!is_constant_evaluated()) return {__umulh(x, y), x * y};
+#  endif
+  uint64_t a = x >> 32;
+  uint64_t b = uint32_t(x);
+  uint64_t c = y >> 32;
+  uint64_t d = uint32_t(y);
+
+  uint64_t ac = a * c;
+  uint64_t bc = b * c;
+  uint64_t ad = a * d;
+  uint64_t bd = b * d;
+
+  uint64_t cs = (bd >> 32) + uint32_t(ad) + uint32_t(bc);  // cross sum
+  return {ac + (ad >> 32) + (bc >> 32) + (cs >> 32), (cs << 32) + uint32_t(bd)};
+#endif  // FMT_ZMIJ_USE_INT128
+}
+
+inline FMT_ZMIJ_CONSTEXPR auto umul192_hi128(uint64_t x_hi, uint64_t x_lo,
+                                             uint64_t y) noexcept -> uint128 {
+  uint128_t p = umul128(x_hi, y);
+  uint64_t lo = uint64_t(p) + uint64_t(umul128(x_lo, y) >> 64);
+  return {uint64_t(p >> 64) + (lo < uint64_t(p)), lo};
+}
+
+// Computes the decimal exponent as floor(log10(2**bin_exp)) if regular or
+// floor(log10(3/4 * 2**bin_exp)) otherwise, without branching.
+constexpr auto compute_dec_exp(int bin_exp, bool regular = true) noexcept
+    -> int {
+#if FMT_ZMIJ_USE_CONSTEXPR  // In C++11, GCC rejects assert in noexcept
+                            // constexpr.
+  assert(bin_exp >= -1334 && bin_exp <= 2620);
+#endif
+  // 315653 is round(log10(2) * 2**20) and 131072 is -log10(3/4) * 2**20
+  // rounded to a power of two.
+  return (bin_exp * 315653 - !regular * 131072) >> 20;
+}
+
+constexpr auto ilog2(int n) noexcept -> int {
+  return n > 1 ? 1 + ilog2(n >> 1) : 0;
+}
+
+template <typename Float> struct float_traits : std::numeric_limits<Float> {
+  static_assert(std::numeric_limits<Float>::is_iec559, "IEEE 754 required");
+
+  // x87 80-bit stores the integer bit explicitly (digits == 64), so its
+  // exponent sits one bit higher than the implicit-bit binary32/64/128 layouts.
+  static constexpr int num_sig_bits = float_traits::digits - 1;
+  static constexpr int num_exp_bits = ilog2(float_traits::max_exponent) + 1;
+  static constexpr int exp_shift =
+      num_sig_bits + (float_traits::digits == 64 ? 1 : 0);
+  static constexpr int num_bits = exp_shift + num_exp_bits + 1;
+  static constexpr int exp_mask = (1 << num_exp_bits) - 1;
+  static constexpr int exp_bias = (1 << (num_exp_bits - 1)) - 1;
+  static constexpr int exp_offset = exp_bias + num_sig_bits;
+  static constexpr int min_fixed_dec_exp = -4;
+  static constexpr int max_fixed_dec_exp =
+      compute_dec_exp(float_traits::digits + 1) - 1;
+
+  using sig_type = typename std::conditional<
+      num_bits <= 32, uint32_t,
+      typename std::conditional<num_bits <= 64, uint64_t,
+                                uint128_t>::type>::type;
+  static constexpr sig_type implicit_bit = sig_type(1) << num_sig_bits;
+
+  // Bounds for the exact big-integer path (write_big): the significand times
+  // 5**k (k up to exp_offset + num_sig_bits - 1) fits in big_bits bits, hence
+  // big_limbs base-2**32 limbs and big_digits decimal digits. 2322/1000 and
+  // 30103/100000 over-approximate log2(5) and log10(2); the +2 rounds the digit
+  // count up and reserves one carry digit.
+  static constexpr int big_bits =
+      num_sig_bits + 2 + (exp_offset + num_sig_bits - 1) * 2322 / 1000;
+  static constexpr int big_limbs = (big_bits + 31) / 32;
+  static constexpr int big_digits = big_bits * 30103 / 100000 + 2;
+
+  static FMT_ZMIJ_CONSTEXPR20 auto to_bits(Float value) noexcept -> sig_type {
+#if defined(__cpp_lib_bit_cast) && __cpp_lib_bit_cast >= 201806L
+    if (std::is_constant_evaluated()) {
+      if constexpr (sizeof(sig_type) == sizeof(Float))
+        return std::bit_cast<sig_type>(value);
+    }
+#endif
+    sig_type bits = sig_type();
+    memcpy(&bits, &value, sizeof(value));
+    return bits;
+  }
+
+  static constexpr auto is_negative(sig_type bits) noexcept -> bool {
+    return ((bits >> (num_bits - 1)) & 1) != 0;
+  }
+  static constexpr auto get_sig(sig_type bits) noexcept -> sig_type {
+    return bits & (implicit_bit - 1);
+  }
+  static constexpr auto get_exp(sig_type bits) noexcept -> int64_t {
+    return int64_t(uint64_t(bits >> exp_shift) & unsigned(exp_mask));
+  }
+  static constexpr auto is_normal(int64_t bin_exp) noexcept -> bool {
+    // Fold subnormal/zero (exp 0) and inf/nan (exp exp_mask) into one check.
+    return unsigned(bin_exp - 1) < unsigned(exp_mask - 1);
+  }
+};
+
+#ifndef __cpp_inline_variables
+template <typename Float>
+constexpr
+    typename float_traits<Float>::sig_type float_traits<Float>::implicit_bit;
+#endif
+
+// Compressed 128-bit significands of powers of 10, and powers of 5 below 5**13.
+template <typename = void> struct pow10_data {
+  static constexpr uint64_t minor[28] = {
+      0x8000000000000000, 0xa000000000000000, 0xc800000000000000,
+      0xfa00000000000000, 0x9c40000000000000, 0xc350000000000000,
+      0xf424000000000000, 0x9896800000000000, 0xbebc200000000000,
+      0xee6b280000000000, 0x9502f90000000000, 0xba43b74000000000,
+      0xe8d4a51000000000, 0x9184e72a00000000, 0xb5e620f480000000,
+      0xe35fa931a0000000, 0x8e1bc9bf04000000, 0xb1a2bc2ec5000000,
+      0xde0b6b3a76400000, 0x8ac7230489e80000, 0xad78ebc5ac620000,
+      0xd8d726b7177a8000, 0x878678326eac9000, 0xa968163f0a57b400,
+      0xd3c21bcecceda100, 0x84595161401484a0, 0xa56fa5b99019a5c8,
+      0xcecb8f27f4200f3a,
+  };
+  // {hi, lo} pairs: GCC 4.9 rejects constexpr uint128 arrays in templates.
+  static constexpr uint64_t major[25][2] = {
+      {0xaddcb9e83c6b1793, 0xdf4abe242a1bbf3e},  // -331 (+1 ULP: see fixups)
+      {0xaf8e5410288e1b6f, 0x07ecf0ae5ee44dda},  // -303
+      {0xb1442798f49ffb4a, 0x99cd11cfdf41779d},  // -275
+      {0xb2fe3f0b8599ef07, 0x861fa7e6dcb4aa15},  // -247
+      {0xb4bca50b065abe63, 0x0fed077a756b53aa},  // -219
+      {0xb67f6455292cbf08, 0x1a3bc84c17b1d543},  // -191
+      {0xb84687c269ef3bfb, 0x3d5d514f40eea742},  // -163
+      {0xba121a4650e4ddeb, 0x92f34d62616ce413},  // -135
+      {0xbbe226efb628afea, 0x890489f70a55368c},  // -107
+      {0xbdb6b8e905cb600f, 0x5400e987bbc1c921},  //  -79
+      {0xbf8fdb78849a5f96, 0xde98520472bdd034},  //  -51
+      {0xc16d9a0095928a27, 0x75b7053c0f178294},  //  -23
+      {0xc350000000000000, 0x0000000000000000},  //    5
+      {0xc5371912364ce305, 0x6c28000000000000},  //   33
+      {0xc722f0ef9d80aad6, 0x424d3ad2b7b97ef6},  //   61
+      {0xc913936dd571c84c, 0x03bc3a19cd1e38ea},  //   89
+      {0xcb090c8001ab551c, 0x5cadf5bfd3072cc6},  //  117
+      {0xcd036837130890a1, 0x36dba887c37a8c10},  //  145
+      {0xcf02b2c21207ef2e, 0x94f967e45e03f4bc},  //  173
+      {0xd106f86e69d785c7, 0xe13336d701beba52},  //  201
+      {0xd31045a8341ca07c, 0x1ede48111209a051},  //  229
+      {0xd51ea6fa85785631, 0x552a74227f3ea566},  //  257
+      {0xd732290fbacaf133, 0xa97c177947ad4096},  //  285
+      {0xd94ad8b1c7380874, 0x18375281ae7822bd},  //  313 (+1 ULP: see fixups)
+      {0xdb68c2ca82ed2a05, 0xa67398db9f6820e1},  //  341
+  };
+  static constexpr uint32_t fixups[21] = {
+      0x8d8fc810, 0x06100293, 0x19000000, 0x00100000, 0x00000908, 0x00000000,
+      0x04e00300, 0x3807e0b2, 0x3d83d793, 0x0006f5cc, 0x00000000, 0xffff0000,
+      0x8076337d, 0x4ff45ba0, 0x09405033, 0x034376d9, 0x09000000, 0x4e100501,
+      0x076d14dc, 0xf964f45e, 0x0000003d};
+  static constexpr uint32_t pow5[13] = {
+      1,     5,      25,      125,     625,      3125,     15625,
+      78125, 390625, 1953125, 9765625, 48828125, 244140625};
+};
+
+#ifndef __cpp_inline_variables
+template <typename T> constexpr uint64_t pow10_data<T>::minor[];
+template <typename T> constexpr uint64_t pow10_data<T>::major[][2];
+template <typename T> constexpr uint32_t pow10_data<T>::fixups[];
+template <typename T> constexpr uint32_t pow10_data<T>::pow5[];
+#endif
+
+// Computes the 128-bit significand of 10**exp rounded down using method by
+// Dougall Johnson.
+inline FMT_ZMIJ_CONSTEXPR auto compute_pow10(int exp) noexcept -> uint128 {
+  using data = pow10_data<>;
+  constexpr int min_exp = -307;
+  constexpr int stride = sizeof(data::minor) / sizeof(*data::minor);
+  assert(exp >= min_exp && exp <= 341);
+  unsigned i = unsigned(exp - min_exp);
+  uint64_t m = data::minor[(i + 24) % stride];
+  unsigned j = (i + 24) / stride;
+  uint128 h = {data::major[j][0], data::major[j][1]};
+
+  uint64_t h1 = uint64_t(umul128(h.lo, m) >> 64);
+  uint64_t c0 = h.lo * m;
+  uint64_t c1 = h1 + h.hi * m;
+  uint64_t c2 = (c1 < h1) + uint64_t(umul128(h.hi, m) >> 64);
+
+  uint128 result = (c2 >> 63) != 0
+                       ? uint128{c2, c1}
+                       : uint128{c2 << 1 | c1 >> 63, c1 << 1 | c0 >> 63};
+  result.lo -= (data::fixups[i >> 5] >> (i & 31)) & 1;
+  return result;
+}
+
+// Computes a shift so that, after scaling by a power of 10, the intermediate
+// result always has a fixed 128-bit fractional part (for float and double).
+//
+// Different binary exponents can map to the same decimal exponent, but place
+// the decimal point at different bit positions. The shift compensates for this.
+//
+// For example, both 3 * 2**59 and 3 * 2**60 have dec_exp = 2, but dividing by
+// 10^dec_exp puts the decimal point in different bit positions:
+//   3 * 2**59 / 100 = 1.72...e+16  (needs shift = 1 + 1)
+//   3 * 2**60 / 100 = 3.45...e+16  (needs shift = 2 + 1)
+inline FMT_ZMIJ_CONSTEXPR auto compute_exp_shift(int bin_exp,
+                                                 int dec_exp) noexcept
+    -> signed char {
+  assert(dec_exp >= -350 && dec_exp <= 350);
+  // log2_pow10_sig = round(log2(10) * 2**log2_pow10_exp) + 1
+  constexpr int log2_pow10_sig = 217707, log2_pow10_exp = 16;
+  // pow10_bin_exp = floor(log2(10**-dec_exp))
+  int pow10_bin_exp = -dec_exp * log2_pow10_sig >> log2_pow10_exp;
+  // pow10 = ((pow10_hi << 64) | pow10_lo) * 2**(pow10_bin_exp - 127)
+  return static_cast<signed char>(bin_exp + pow10_bin_exp + 1);
+}
+
+// Converts the nonzero finite binary value bin_sig * 2**bin_exp using yy.
+template <typename Float>
+inline FMT_ZMIJ_CONSTEXPR20 auto to_decimal(uint64_t bin_sig,
+                                            int bin_exp) noexcept -> dec_fp<> {
+  assert(bin_sig != 0);
+  constexpr uint64_t implicit_bit = float_traits<Float>::implicit_bit;
+  bool irregular = bin_sig == implicit_bit;
+  int dec_exp = compute_dec_exp(bin_exp, !irregular);
+  int shift = compute_exp_shift(bin_exp, dec_exp) - 1;
+  uint128 pow10 = compute_pow10(-dec_exp);
+  uint128 p = umul192_hi128(pow10.hi, pow10.lo, bin_sig << (shift + 1));
+
+  uint64_t one = p.hi % 10;
+  uint64_t ten = p.hi - one;
+  uint64_t c = one << 60 | p.lo >> 4;
+  uint64_t half_ulp = pow10.hi >> (4 - shift);
+
+  bool round_u1 = false;
+  bool round_d0 = false;
+  if (irregular) {
+    bool round_d1 = (half_ulp >> 1) >= (p.lo >> 4);
+    round_u1 = p.lo > (uint64_t(1) << 63) || !round_d1;
+    round_d0 = (half_ulp >> 1) >= c;
+  } else {
+    uint64_t half = uint64_t(1) << 63;
+    round_u1 = p.lo == half ? (p.hi & 1) != 0 : p.lo > half;
+    round_d0 = half_ulp == c ? (bin_sig & 1) == 0 : c < half_ulp;
+  }
+
+  uint64_t t0 = uint64_t(10) << 60;
+  uint64_t t1 = c + half_ulp;
+  bool even = (bin_sig & 1) == 0;
+  bool round_u0 = t0 <= t1;
+  // Exact trim-up boundaries round toward the even binary significand.
+  if (t1 + 1 == t0 || (dec_exp == 0 && t1 == t0)) round_u0 = even;
+
+  uint64_t dec_one = p.hi + round_u1;
+  uint64_t dec_ten = ten + (round_u0 ? 10 : 0);
+  return {round_d0 || round_u0 ? dec_ten : dec_one, dec_exp, false};
+}
+
+inline FMT_ZMIJ_CONSTEXPR20 auto copy_n(char* out, const char* in,
+                                        size_t count) noexcept -> char* {
+  for (size_t i = 0; i < count; ++i) *out++ = *in++;
+  return out;
+}
+
+// Divides x by 10 in place and returns the remainder.
+inline auto divmod10(uint128_t& x) noexcept -> uint64_t {
+#if FMT_ZMIJ_USE_INT128
+  uint64_t r = uint64_t(x % 10);
+  x /= 10;
+  return r;
+#else
+  auto div = [](uint64_t& w, uint64_t rem) -> uint64_t {
+    uint64_t hi = rem << 32 | w >> 32;
+    uint64_t lo = (hi % 10) << 32 | uint32_t(w);
+    w = (hi / 10) << 32 | (lo / 10);
+    return lo % 10;
+  };
+  return div(x.lo, div(x.hi, 0));
+#endif
+}
+
+// A minimal binary big integer (little-endian base-2**32 limbs) over caller-
+// provided storage.
+struct bigint {
+  uint32_t* limbs;
+  int num_limbs = 0;  // Significant limbs; 0 represents zero.
+  int max_limbs;      // Available limbs in `limbs`.
+
+  // Callers must size `max_limbs` for the largest value the number will reach.
+  FMT_ZMIJ_CONSTEXPR bigint(uint128_t value, uint32_t* buffer,
+                            int size) noexcept
+      : limbs(buffer), max_limbs(size) {
+    uint64_t lo = uint64_t(value), hi = uint64_t(value >> 64);
+    limbs[0] = uint32_t(lo);
+    limbs[1] = uint32_t(lo >> 32);
+    limbs[2] = uint32_t(hi);
+    limbs[3] = uint32_t(hi >> 32);
+    // Keep after the limb stores: setting it first worsens write_fixed_big.
+    num_limbs = 4;
+    trim();
+  }
+
+  FMT_ZMIJ_CONSTEXPR void trim() noexcept {
+    while (num_limbs > 0 && limbs[num_limbs - 1] == 0) --num_limbs;
+  }
+
+  // Shifts left by `n`.
+  FMT_ZMIJ_CONSTEXPR void shl(int n) noexcept {
+    assert(n >= 0);
+    if (num_limbs == 0) return;
+    int limb_shift = n >> 5, bit_shift = n & 31;
+    assert(num_limbs + limb_shift + (bit_shift != 0) <= max_limbs);
+    if (bit_shift == 0) {
+      for (int i = num_limbs - 1; i >= 0; --i) limbs[i + limb_shift] = limbs[i];
+      num_limbs += limb_shift;
+    } else {
+      limbs[num_limbs + limb_shift] = limbs[num_limbs - 1] >> (32 - bit_shift);
+      for (int i = num_limbs - 1; i > 0; --i) {
+        limbs[i + limb_shift] =
+            limbs[i] << bit_shift | limbs[i - 1] >> (32 - bit_shift);
+      }
+      limbs[limb_shift] = limbs[0] << bit_shift;
+      num_limbs += limb_shift + 1;
+    }
+    for (int i = 0; i < limb_shift; ++i) limbs[i] = 0;
+    trim();
+  }
+
+  // Divides by 10**9 in place and returns the remainder.
+  FMT_ZMIJ_CONSTEXPR auto divmod_1e9() noexcept -> uint32_t {
+    uint64_t rem = 0;
+    for (int i = num_limbs - 1; i >= 0; --i) {
+      uint64_t div = rem << 32 | limbs[i];
+      limbs[i] = uint32_t(div / 1000000000u);
+      rem = div % 1000000000u;
+    }
+    trim();
+    return uint32_t(rem);
+  }
+
+  // Multiplies in place by a nonzero `factor`.
+  FMT_ZMIJ_CONSTEXPR void mul(uint32_t factor) noexcept {
+    assert(factor != 0);
+    uint64_t carry = 0;
+    for (int i = 0; i < num_limbs; ++i) {
+      uint64_t product = uint64_t(limbs[i]) * factor + carry;
+      limbs[i] = uint32_t(product);
+      carry = product >> 32;
+    }
+    if (carry == 0) return;
+    assert(num_limbs < max_limbs);
+    limbs[num_limbs++] = uint32_t(carry);
+  }
+
+  // Multiplies in place by 5**n.
+  FMT_ZMIJ_CONSTEXPR void mul_pow5(int n) noexcept {
+    assert(n >= 0);
+    while (n >= 13) {  // 5**13 is the largest power of five below 2**32.
+      mul(1220703125u);
+      n -= 13;
+    }
+    if (n != 0) mul(pow10_data<>::pow5[n]);
+  }
+};
+
+// Emits n's decimal digits (most significant first) ending at `end`, consuming
+// n, and returns a pointer to the first (most significant) digit.
+inline FMT_ZMIJ_CONSTEXPR auto write_digits(bigint n, char* end) noexcept
+    -> char* {
+  char* p = end;
+  uint32_t group = n.divmod_1e9();
+  while (n.num_limbs != 0) {  // Lower groups keep all 9 digits.
+    for (int k = 0; k < 9; ++k, group /= 10) *--p = char('0' + group % 10);
+    group = n.divmod_1e9();
+  }
+  do {  // The most significant group drops its leading zeros.
+    *--p = char('0' + group % 10);
+  } while ((group /= 10) != 0);
+  return p;
+}
+
+// Returns true if any character in [first, last) is not '0'.
+inline FMT_ZMIJ_CONSTEXPR auto any_nonzero(const char* first,
+                                           const char* last) noexcept -> bool {
+  for (; first < last; ++first)
+    if (*first != '0') return true;
+  return false;
+}
+
+// `buffer` params require at least buffer_sizes<Float> capacity;
+// `out`/`n` params write at most `n` characters.
+
+// Converts `value` to the shortest correctly rounded decimal (see to_decimal).
+template <typename Float> auto to_decimal(Float value) noexcept -> dec_fp<>;
+
+// Wide-significand variant for long double (see to_decimal).
+template <typename Float>
+auto to_decimal_big(Float value) noexcept -> dec_fp<uint128_t>;
+
+template <typename Float>
+auto write(char* buffer, Float value) noexcept -> char*;
+
+// Writes the shortest decimal representation of `value`, correctly rounded
+// (ties to even), into `out`, truncating after `n` chars. Returns the total
+// length the result would need; if it exceeds `n` the output was truncated to
+// the first `n` chars.
+template <typename Float>
+auto write_big(char* out, size_t n, Float value) noexcept -> size_t;
+
+// Writes `value` in `fmt` notation with `precision` digits, correctly rounded
+// (ties to even), into `out`, truncating after `n` chars. Returns the total
+// length the result would need; if it exceeds `n` the output was truncated to
+// the first `n` chars, and 0 on allocation failure (only possible for long
+// double).
+template <typename Float>
+FMT_ZMIJ_CONSTEXPR20 auto write_big(char* out, size_t n, Float value,
+                                    int precision, format fmt) noexcept
+    -> size_t;
+template <>
+inline auto write_big(char* out, size_t n, float value, int precision,
+                      format fmt) noexcept -> size_t {
+  return write_big(out, n, double(value), precision, fmt);
+}
+
+template <typename Float>
+auto write_scientific(char* buffer, Float value, int precision) noexcept
+    -> char*;
+
+template <typename Float>
+auto write_general(char* buffer, Float value, int precision) noexcept -> char*;
+
+template <typename Float>
+auto write_fixed(char* buffer, Float value, int precision) noexcept -> char*;
+
+// Writes the decimal exponent as 'e', a sign and at least two digits, up to
+// four (e.g. e+05 or e+4932, enough for extended long double).
+inline FMT_ZMIJ_CONSTEXPR auto write_big_exp(char* buffer, int dec_exp) noexcept
+    -> char* {
+  *buffer++ = 'e';
+  *buffer++ = dec_exp >= 0 ? '+' : '-';
+  uint32_t abs_exp = dec_exp >= 0 ? uint32_t(dec_exp) : uint32_t(-dec_exp);
+  uint32_t hi = abs_exp / 100;
+  *buffer = char('0' + hi / 10);
+  buffer += hi >= 10;
+  *buffer = char('0' + hi % 10);
+  buffer += abs_exp >= 100;
+  uint32_t lo = abs_exp - hi * 100;
+  buffer[0] = char('0' + lo / 10);
+  buffer[1] = char('0' + lo % 10);
+  return buffer + 2;
+}
+
+// An output sink that appends to `out`, discarding anything past `end`.
+struct writer {
+  char* out;
+  char* end;
+  size_t count;  // total chars, including any dropped past `end`
+
+  // The write functions return `count`, the running total of requested chars.
+  FMT_ZMIJ_INLINE FMT_ZMIJ_CONSTEXPR auto write(char c) noexcept -> size_t {
+    if (out < end) *out++ = c;
+    return ++count;
+  }
+  // Copies s[0..n), or n zeros if `s` is null, during constant evaluation.
+  // Compares with `end` rather than subtracting: GCC rejects `end - out` when
+  // `out` is a row of a 2D array.
+  FMT_ZMIJ_CONSTEXPR20 void put(const char* s, int n) noexcept {
+    for (int i = 0; i < n && out < end; ++i) *out++ = s ? s[i] : '0';
+  }
+  // Copies at most `end - out` chars of `s[0..n)`; `n` must be non-negative.
+  FMT_ZMIJ_INLINE FMT_ZMIJ_CONSTEXPR20 auto write(const char* s, int n) noexcept
+      -> size_t {
+    assert(n >= 0);
+    if (zmij::detail::is_constant_evaluated()) {
+      put(s, n);
+    } else {
+      size_t take = n < end - out ? size_t(n) : size_t(end - out);
+      memcpy(out, s, take);
+      out += take;
+    }
+    return count += size_t(n);
+  }
+  // Writes at most `end - out` copies of '0'; `n` must be non-negative.
+  FMT_ZMIJ_INLINE FMT_ZMIJ_CONSTEXPR20 auto write_zeros(int n) noexcept
+      -> size_t {
+    assert(n >= 0);
+    if (zmij::detail::is_constant_evaluated()) {
+      put(nullptr, n);
+    } else {
+      size_t take = n < end - out ? size_t(n) : size_t(end - out);
+      memset(out, '0', take);
+      out += take;
+    }
+    return count += size_t(n);
+  }
+};
+
+// Emits the digit run digits[0..num_digits) with the decimal point placed per
+// lead_exp, in fixed or scientific notation. Fixed pads to decimal_places
+// fractional digits; scientific appends num_tail_zeros to the fraction.
+inline FMT_ZMIJ_CONSTEXPR20 auto write_number(writer& w, const char* digits,
+                                              int num_digits, int lead_exp,
+                                              bool fixed, int decimal_places,
+                                              int num_tail_zeros) noexcept
+    -> size_t {
+  if (!fixed) {
+    // Emit scientific notation d.ddde±XX.
+    w.write(digits[0]);
+    // Emit a point only when fractional digits follow it.
+    if (num_digits - 1 + num_tail_zeros > 0) {
+      w.write('.');
+      w.write(digits + 1, num_digits - 1);
+      w.write_zeros(num_tail_zeros);  // pad the fraction to precision
+    }
+    char exp[8];
+    char* end = zmij::detail::write_big_exp(exp, lead_exp);
+    return w.write(exp, int(end - exp));
+  }
+
+  // Emit fixed notation.
+  int point_pos = lead_exp + 1;
+  int num_int_digits = 0;  // significant digits before the point
+  if (point_pos <= 0) {    // |value| < 1, e.g. 0.00123
+    w.write('0');
+  } else {
+    num_int_digits = point_pos < num_digits ? point_pos : num_digits;
+    w.write(digits, num_int_digits);
+    w.write_zeros(point_pos - num_int_digits);  // integer zeros, e.g. 12300
+  }
+  if (decimal_places <= 0) return w.count;
+  w.write('.');
+  int num_lead_zeros = point_pos < 0 ? -point_pos : 0;
+  w.write_zeros(num_lead_zeros);  // 0.00...
+  int num_frac_digits = num_digits - num_int_digits;
+  w.write(digits + num_int_digits, num_frac_digits);
+  return w.write_zeros(decimal_places - num_lead_zeros - num_frac_digits);
+}
+
+// Writes the shortest representation of `value` like `write`, for constant
+// evaluation, into `out`, truncating after `n` chars. Returns the total length
+// the result would need.
+template <typename Float>
+inline FMT_ZMIJ_CONSTEXPR20 auto write_constexpr(char* out, size_t n,
+                                                 Float value) noexcept
+    -> size_t {
+  using traits = float_traits<Float>;
+  auto bits = traits::to_bits(value);
+  auto raw_exp = int(traits::get_exp(bits));
+  auto bin_sig = uint64_t(traits::get_sig(bits));
+
+  writer w = {out, out + n, 0};
+  if (traits::is_negative(bits)) w.write('-');
+  if (raw_exp == traits::exp_mask)
+    return w.write(bin_sig != 0 ? "nan" : "inf", 3);
+  if (raw_exp == 0 && bin_sig == 0) return w.write('0');
+
+  int bin_exp = (raw_exp == 0 ? 1 : raw_exp) - traits::exp_offset;
+  if (raw_exp != 0) bin_sig |= traits::implicit_bit;
+  dec_fp<> dec = to_decimal<Float>(bin_sig, bin_exp);
+  while (dec.sig % 10 == 0) {
+    dec.sig /= 10;
+    ++dec.exp;
+  }
+
+  char digits[traits::max_digits10] = {};
+  char* first = digits + sizeof(digits);
+  do {
+    *--first = char('0' + dec.sig % 10);
+    dec.sig /= 10;
+  } while (dec.sig != 0);
+  int num_digits = int(digits + sizeof(digits) - first);
+  int lead_exp = dec.exp + num_digits - 1;
+  bool fixed = lead_exp >= traits::min_fixed_dec_exp &&
+               lead_exp <= traits::max_fixed_dec_exp;
+  return write_number(w, first, num_digits, lead_exp, fixed,
+                      num_digits - lead_exp - 1, 0);
+}
+
+inline FMT_ZMIJ_CONSTEXPR20 auto write_big(writer& w, bigint num, int bin_exp,
+                                           int precision, char* digits,
+                                           int digits_size,
+                                           zmij::format fmt) noexcept
+    -> size_t {
+  bool general = fmt == zmij::format::general;
+  bool fixed = fmt == zmij::format::fixed;
+  assert(precision >= general);
+
+  digits[0] = '0';
+  char* p = digits;
+  int num_digits = 1;
+  int lead_exp = 0;  // exponent of the leading digit
+
+  if (num.num_limbs != 0) {
+    // Represent the value exactly as an integer num times a power of ten:
+    // value = sig * 2**bin_exp = num * 10**base_exp, so its decimal digits are
+    // num's. For bin_exp < 0 the identity 2**bin_exp = 5**-bin_exp *
+    // 10**bin_exp keeps num integral via a power-of-five multiply.
+    int base_exp = 0;
+    if (bin_exp >= 0) {
+      num.shl(bin_exp);
+    } else {
+      num.mul_pow5(-bin_exp);
+      base_exp = bin_exp;
+    }
+
+    p = write_digits(num, digits + digits_size);
+    num_digits = int(digits + digits_size - p);
+    lead_exp = num_digits - 1 + base_exp;
+
+    // Significant digits to keep: precision for %g. For %e/%f it counts
+    // fractional digits, so add one leading digit; %f adds lead_exp more.
+    int max_digits = precision + !general + (fixed ? lead_exp : 0);
+    // Round to max_digits significant digits, ties to even.
+    if (max_digits < 1) {
+      // |value| < 10**-precision: rounds to 0, or up to 10**-precision when the
+      // discarded part exceeds half a unit (a tie rounds to even, i.e. 0).
+      bool round_up = false;
+      if (max_digits == 0) {
+        round_up =
+            p[0] > '5' || (p[0] == '5' && any_nonzero(p + 1, p + num_digits));
+      }
+      digits[0] = char('0' + round_up);
+      p = digits;
+      num_digits = 1;
+      lead_exp = round_up ? -precision : 0;
+    } else if (num_digits > max_digits) {
+      char dropped = p[max_digits];
+      bool round_up = dropped > '5';
+      // A dropped 5 ties to even unless a lower nonzero digit rounds up.
+      if (dropped == '5') {
+        round_up = ((p[max_digits - 1] - '0') & 1) ||
+                   any_nonzero(p + max_digits + 1, p + num_digits);
+      }
+      num_digits = max_digits;
+      if (round_up) {
+        char* q = p + max_digits - 1;
+        // Propagate the carry over trailing nines.
+        while (q >= p && *q == '9') *q-- = '0';
+        // 999.. rolling over to 1000.. adds a significant digit.
+        if (q < p) {
+          *--p = '1';
+          ++lead_exp;
+        } else {
+          ++*q;
+        }
+      }
+    }
+  }
+
+  int decimal_places = precision;  // fractional digit positions to emit
+  if (general) {
+    // Drop trailing zeros and pick fixed or scientific.
+    while (num_digits > 1 && p[num_digits - 1] == '0') --num_digits;
+    fixed = lead_exp >= -4 && lead_exp < precision;
+    decimal_places = num_digits - lead_exp - 1;
+  }
+
+  // %e pads the fraction to `precision` digits; %g and shortest emit none.
+  int num_tail_zeros = general ? 0 : precision - num_digits + 1;
+  return write_number(w, p, num_digits, lead_exp, fixed, decimal_places,
+                      num_tail_zeros);
+}
+
+template <typename Float>
+FMT_ZMIJ_CONSTEXPR20 auto write_big(char* out, size_t n, Float value,
+                                    int precision, format fmt) noexcept
+    -> size_t {
+  using traits = float_traits<Float>;
+  auto bits = traits::to_bits(value);
+  auto bin_exp = traits::get_exp(bits);
+  auto bin_sig = traits::get_sig(bits);
+
+  writer w = {out, out + n, 0};
+  if (traits::is_negative(bits)) w.write('-');
+
+  if (!traits::is_normal(bin_exp)) [[FMT_ZMIJ_UNLIKELY]] {
+    if (bin_exp != 0)  // inf or nan
+      return w.write(bin_sig != 0 ? "nan" : "inf", 3);
+    bin_exp = 1;  // subnormal or zero
+    bin_sig = bin_sig ^ traits::implicit_bit;
+  }
+  bin_sig = bin_sig ^ traits::implicit_bit;
+
+  // The big integer's limbs and the decimal digits stay on the stack except for
+  // the extended long double case, which is too large (~11.6 KB) and puts both
+  // in one heap block.
+  constexpr bool use_heap =
+      traits::big_digits > float_traits<double>::big_digits;
+  uint32_t stack_limbs[use_heap ? 1 : traits::big_limbs];
+  char stack_digits[use_heap ? 1 : traits::big_digits];
+  uint32_t* limbs = stack_limbs;
+  char* digits = stack_digits;
+  if (use_heap) {
+    constexpr int digit_words = (traits::big_digits + 3) / 4;
+    limbs = static_cast<uint32_t*>(
+        malloc(size_t(traits::big_limbs + digit_words) * 4));
+    if (!limbs) return 0;
+    digits = reinterpret_cast<char*>(limbs + traits::big_limbs);
+  }
+  bigint num(bin_sig, limbs, traits::big_limbs);
+  size_t size = write_big(w, num, int(bin_exp - traits::exp_offset), precision,
+                          digits, traits::big_digits, fmt);
+  if (use_heap) free(limbs);
+  return size;
+}
+
+// Writes chars `a` and `b` to `out` and returns the position after them.
+FMT_ZMIJ_INLINE FMT_ZMIJ_CONSTEXPR20 auto write2(char* out, char a,
+                                                 char b) noexcept -> char* {
+  if (zmij::detail::is_constant_evaluated()) {
+    out[0] = a;
+    out[1] = b;
+    return out + 2;
+  }
+  uint16_t v = uint16_t(uint8_t(a) | uint8_t(b) << 8);
+  if (is_big_endian) v = uint16_t(v << 8 | v >> 8);
+  memcpy(out, &v, 2);
+  return out + 2;
+}
+
+// Writes "inf"/"nan" with one 4-byte store, so the buffer must hold 4 bytes.
+inline FMT_ZMIJ_CONSTEXPR20 auto write_inf_nan(char* buffer,
+                                               bool is_nan) noexcept -> char* {
+  if (zmij::detail::is_constant_evaluated())
+    return zmij::detail::copy_n(buffer, is_nan ? "nan" : "inf", 3);
+  memcpy(buffer, is_nan ? "nan" : "inf", 4);
+  return buffer + 3;
+}
+
+// Writes the binary exponent as 'p', a sign and at least one digit (e.g. p+3).
+inline FMT_ZMIJ_CONSTEXPR20 auto write_hex_exp(char* buffer,
+                                               int bin_exp) noexcept -> char* {
+  buffer = write2(buffer, 'p', bin_exp < 0 ? '-' : '+');
+  unsigned abs_exp = unsigned(bin_exp < 0 ? -bin_exp : bin_exp);
+  char digits[8];
+  char* p = digits + sizeof(digits);
+  do {
+    *--p = char('0' + abs_exp % 10);
+    abs_exp /= 10;
+  } while (abs_exp != 0);
+  size_t n = size_t(digits + sizeof(digits) - p);
+  if (zmij::detail::is_constant_evaluated())
+    return zmij::detail::copy_n(buffer, p, n);
+  memcpy(buffer, p, n);
+  return buffer + n;
+}
+
+template <typename Float, typename UInt>
+FMT_ZMIJ_INLINE FMT_ZMIJ_CONSTEXPR20 void normalize(UInt& bin_sig,
+                                                    int64_t& bin_exp) noexcept {
+  // clz counts from the top of its operand, so measure from that width.
+  int lz, width;
+  if (sizeof(UInt) > 8) {
+    uint128_t v = bin_sig;
+    uint64_t hi = uint64_t(v >> 64);
+    lz = hi != 0 ? clz(hi) : 64 + clz(uint64_t(v));
+    width = 128;
+  } else {
+    lz = clz(uint64_t(bin_sig));
+    width = 64;
+  }
+  int shift = lz - (width - 1 - float_traits<Float>::num_sig_bits);
+  bin_sig = bin_sig << shift;
+  bin_exp = 1 - shift;
+}
+
+// Writes `value` in hexadecimal floating-point notation (like printf's %a) in
+// its shortest form, e.g. -0x1.8p+1. If `prefix` is false the leading "0x" is
+// omitted (e.g. -1.8p+1).
+template <typename Float>
+FMT_ZMIJ_CONSTEXPR20 auto write_hex(char* buffer, Float value,
+                                    bool prefix = true) noexcept -> char* {
+  using traits = float_traits<Float>;
+  auto bits = traits::to_bits(value);
+  auto bin_exp = traits::get_exp(bits);
+  auto bin_sig = traits::get_sig(bits);
+
+  *buffer = '-';
+  buffer += traits::is_negative(bits);
+
+  bool zero = false;
+  if (!traits::is_normal(bin_exp)) [[FMT_ZMIJ_UNLIKELY]] {
+    if (bin_exp != 0) return write_inf_nan(buffer, bin_sig != 0);
+    zero = bin_sig == 0;
+    if (zero)
+      bin_exp = traits::exp_bias;  // This cancels to 0 below.
+    else
+      normalize<Float>(bin_sig, bin_exp);
+  }
+  bin_exp -= traits::exp_bias;
+
+  if (prefix) buffer = write2(buffer, '0', 'x');
+  *buffer++ = char('0' + !zero);
+
+  constexpr int width = int(sizeof(bin_sig)) * 8;
+  bin_sig = bin_sig << (width - traits::num_sig_bits);
+  if (bin_sig != 0) {
+    *buffer++ = '.';
+    do {
+      *buffer++ = "0123456789abcdef"[uint64_t(bin_sig >> (width - 4))];
+      bin_sig = bin_sig << 4;
+    } while (bin_sig != 0);
+  }
+
+  return write_hex_exp(buffer, int(bin_exp));
+}
+
+// Writes `value` in hexadecimal floating-point notation with `precision` hex
+// digits after the point, correctly rounded (ties to even), e.g. -0x1.80p+1,
+// into `out`, truncating after `n` chars. Returns the total length the result
+// would need. If `prefix` is false the leading "0x" is omitted.
+template <typename Float>
+auto write_hex(char* out, size_t n, Float value, int precision,
+               bool prefix = true) noexcept -> size_t;
+
+// long_double has no explicit instantiations when long double == double or the
+// long double API isn't provided, so forward its detail functions to double.
+#if LDBL_MANT_DIG == DBL_MANT_DIG || !FMT_ZMIJ_USE_LONG_DOUBLE
+template <>
+inline auto to_decimal_big(long_double value) noexcept -> dec_fp<uint128_t> {
+  dec_fp<> dec = to_decimal(double(value));
+  return {dec.sig, dec.exp, dec.negative};
+}
+// There is no write_big for double, so route shortest through write.
+template <>
+inline auto write_big(char* out, size_t n, long_double value) noexcept
+    -> size_t {
+  char buffer[double_buffer_size];
+  size_t size = size_t(write(buffer, double(value)) - buffer);
+  memcpy(out, buffer, size < n ? size : n);
+  return size;
+}
+template <>
+inline auto write_big(char* out, size_t n, long_double value, int precision,
+                      format fmt) noexcept -> size_t {
+  return write_big(out, n, double(value), precision, fmt);
+}
+template <>
+inline auto write_hex(char* buffer, long_double value, bool prefix) noexcept
+    -> char* {
+  return write_hex(buffer, double(value), prefix);
+}
+template <>
+inline auto write_hex(char* out, size_t n, long_double value, int precision,
+                      bool prefix) noexcept -> size_t {
+  return write_hex(out, n, double(value), precision, prefix);
+}
+#endif  // LDBL_MANT_DIG == DBL_MANT_DIG || !FMT_ZMIJ_USE_LONG_DOUBLE
+
+// Returns the past-the-end pointer after writing min(size, n) chars to `out`.
+constexpr auto clamp_end(char* out, size_t size, size_t n) noexcept -> char* {
+  return out + (size < n ? size : n);
+}
+
+// Copies the result in [`buffer`, `end`) to `out`, truncating after `n` chars,
+// and returns the past-the-end pointer.
+inline FMT_ZMIJ_CONSTEXPR20 auto copy_clamped(char* out, size_t n,
+                                              const char* buffer,
+                                              const char* end) noexcept
+    -> char* {
+  size_t size = size_t(end - buffer);
+  if (is_constant_evaluated()) return copy_n(out, buffer, size < n ? size : n);
+  memcpy(out, buffer, size < n ? size : n);
+  return clamp_end(out, size, n);
+}
+
+}  // namespace detail
+
+/// Converts `value` into the shortest correctly rounded decimal representation.
+/// Usage:
+///   auto [sig, exp, negative] = to_decimal(6.62607015e-34);
+inline auto to_decimal(float value) noexcept -> dec_fp<> {
+  return detail::to_decimal(value);
+}
+inline auto to_decimal(double value) noexcept -> dec_fp<> {
+  return detail::to_decimal(value);
+}
+inline auto to_decimal(long_double value) noexcept
+    -> dec_fp<detail::uint128_t> {
+  return detail::to_decimal_big(value);
+}
+
+/// Buffer sizes for the write* functions, usable in generic code as
+/// buffer_sizes<Float>::shortest, ::scientific, ::fixed, and ::hex.
+/// `scientific` assumes precision up to 17 and `fixed` up to 18; long double
+/// sets its own bounds below. Larger precision must be sized by the caller.
+template <typename Float> struct buffer_sizes;
+
+template <> struct buffer_sizes<float> {
+  static constexpr size_t shortest = float_buffer_size;  // write
+  static constexpr size_t scientific = 24;  // write_scientific (and general)
+  static constexpr size_t fixed = 59;       // write_fixed
+  static constexpr size_t hex = 16;         // write_hex
+};
+template <> struct buffer_sizes<double> {
+  static constexpr size_t shortest = double_buffer_size;  // write
+  static constexpr size_t scientific = 25;  // write_scientific (and general)
+  static constexpr size_t fixed = 329;      // write_fixed
+  static constexpr size_t hex = 24;         // write_hex
+};
+// long double: `scientific` is sized to round-trip: precision 35 (scientific)
+// or 36 (general). `fixed` is omitted as it would need an impractical buffer,
+// so callers must size fixed output themselves.
+template <> struct buffer_sizes<long_double> {
+  static constexpr size_t shortest = long_double_buffer_size;  // write
+  static constexpr size_t scientific = 44;  // write_scientific (and general)
+  // Worst case is IEEE binary128: 1 sign + "0x1." + 28 digits + "p+16383".
+  static constexpr size_t hex = 40;  // write_hex
+};
+
+/// Writes the shortest correctly rounded decimal representation of `value` to
+/// `out`, without a null terminator.
+///
+/// Returns a pointer past the last character written; if the representation
+/// exceeds `n` characters, only the first `n` are written.
+inline FMT_ZMIJ_CONSTEXPR20 auto write(char* out, size_t n,
+                                       double value) noexcept -> char* {
+  if (detail::is_constant_evaluated())
+    return detail::clamp_end(out, detail::write_constexpr(out, n, value), n);
+  char buffer[double_buffer_size];
+  if (n >= sizeof(buffer)) return detail::write(out, value);
+  return detail::copy_clamped(out, n, buffer, detail::write(buffer, value));
+}
+
+inline FMT_ZMIJ_CONSTEXPR20 auto write(char* out, size_t n,
+                                       float value) noexcept -> char* {
+  if (detail::is_constant_evaluated())
+    return detail::clamp_end(out, detail::write_constexpr(out, n, value), n);
+  char buffer[float_buffer_size];
+  if (n >= sizeof(buffer)) return detail::write(out, value);
+  return detail::copy_clamped(out, n, buffer, detail::write(buffer, value));
+}
+
+inline auto write(char* out, size_t n, long_double value) noexcept -> char* {
+  if (LDBL_MANT_DIG == DBL_MANT_DIG) return write(out, n, double(value));
+  return detail::clamp_end(out, detail::write_big(out, n, value), n);
+}
+
+/// Writes `value` in scientific format with `precision` digits after the
+/// decimal point (e.g. 1.234e+05) to `out`, without a null terminator, like
+/// printf's %e. A negative `precision` defaults to 6.
+///
+/// Returns a pointer past the last character written; if the representation
+/// exceeds `n` characters, only the first `n` are written. The `long double`
+/// overload returns nullptr on allocation failure.
+inline FMT_ZMIJ_CONSTEXPR20 auto write_scientific(char* out, size_t n,
+                                                  double value,
+                                                  int precision) noexcept
+    -> char* {
+  if (precision < 0) precision = 6;
+  if (precision >= 18 || detail::is_constant_evaluated()) {
+    auto size = detail::write_big(out, n, value, precision, format::scientific);
+    return detail::clamp_end(out, size, n);
+  }
+  char buffer[buffer_sizes<double>::scientific];
+  if (n >= sizeof(buffer))
+    return detail::write_scientific(out, value, precision + 1);
+  return detail::copy_clamped(
+      out, n, buffer, detail::write_scientific(buffer, value, precision + 1));
+}
+
+inline FMT_ZMIJ_CONSTEXPR20 auto write_scientific(char* out, size_t n,
+                                                  float value,
+                                                  int precision) noexcept
+    -> char* {
+  if (precision < 0) precision = 6;
+  if (precision >= 18 || detail::is_constant_evaluated()) {
+    auto size =
+        detail::write_big(out, n, double(value), precision, format::scientific);
+    return detail::clamp_end(out, size, n);
+  }
+  char buffer[buffer_sizes<float>::scientific];
+  if (n >= sizeof(buffer))
+    return detail::write_scientific(out, value, precision + 1);
+  return detail::copy_clamped(
+      out, n, buffer, detail::write_scientific(buffer, value, precision + 1));
+}
+
+inline auto write_scientific(char* out, size_t n, long_double value,
+                             int precision) noexcept -> char* {
+  if (double(value) == value)
+    return write_scientific(out, n, double(value), precision);
+  if (precision < 0) precision = 6;
+  auto size = detail::write_big(out, n, value, precision, format::scientific);
+  return size != 0 ? detail::clamp_end(out, size, n) : nullptr;
+}
+
+/// Writes `value` in general format with up to `precision` significant digits
+/// and no trailing zeros (e.g. 1.5 or 1.5e+20) to `out`, without a null
+/// terminator. Fixed notation is used when `value`'s decimal exponent is in
+/// [-4, precision), and scientific otherwise. A negative `precision` defaults
+/// to 6 and zero is treated as 1, matching printf.
+///
+/// Returns a pointer past the last character written; if the representation
+/// exceeds `n` characters, only the first `n` are written. The `long double`
+/// overload returns nullptr on allocation failure.
+inline FMT_ZMIJ_CONSTEXPR20 auto write_general(char* out, size_t n,
+                                               double value,
+                                               int precision) noexcept
+    -> char* {
+  if (precision <= 1) precision = precision < 0 ? 6 : 1;
+  if (precision > 18 || detail::is_constant_evaluated()) {
+    auto size = detail::write_big(out, n, value, precision, format::general);
+    return detail::clamp_end(out, size, n);
+  }
+  char buffer[buffer_sizes<double>::scientific];
+  if (n >= sizeof(buffer)) return detail::write_general(out, value, precision);
+  return detail::copy_clamped(out, n, buffer,
+                              detail::write_general(buffer, value, precision));
+}
+
+inline FMT_ZMIJ_CONSTEXPR20 auto write_general(char* out, size_t n, float value,
+                                               int precision) noexcept
+    -> char* {
+  if (precision <= 1) precision = precision < 0 ? 6 : 1;
+  if (precision > 18 || detail::is_constant_evaluated()) {
+    auto size =
+        detail::write_big(out, n, double(value), precision, format::general);
+    return detail::clamp_end(out, size, n);
+  }
+  char buffer[buffer_sizes<float>::scientific];
+  if (n >= sizeof(buffer)) return detail::write_general(out, value, precision);
+  return detail::copy_clamped(out, n, buffer,
+                              detail::write_general(buffer, value, precision));
+}
+
+inline auto write_general(char* out, size_t n, long_double value,
+                          int precision) noexcept -> char* {
+  if (double(value) == value)
+    return write_general(out, n, double(value), precision);
+  if (precision <= 1) precision = precision < 0 ? 6 : 1;
+  auto size = detail::write_big(out, n, value, precision, format::general);
+  return size != 0 ? detail::clamp_end(out, size, n) : nullptr;
+}
+
+/// Writes `value` in fixed notation with exactly `precision` digits after the
+/// decimal point (e.g. 1.500) to `out`, without a null terminator. The result
+/// is the exact value correctly rounded (ties to even), matching printf's %f.
+/// A negative `precision` defaults to 6.
+///
+/// Returns a pointer past the last character written; if the representation
+/// exceeds `n` characters, only the first `n` are written. The `long double`
+/// overload returns nullptr on allocation failure.
+inline FMT_ZMIJ_CONSTEXPR20 auto write_fixed(char* out, size_t n, double value,
+                                             int precision) noexcept -> char* {
+  if (precision < 0) precision = 6;
+  if (precision > 18 || detail::is_constant_evaluated()) {
+    auto size = detail::write_big(out, n, value, precision, format::fixed);
+    return detail::clamp_end(out, size, n);
+  }
+  char buffer[buffer_sizes<double>::fixed];
+  if (n >= sizeof(buffer)) return detail::write_fixed(out, value, precision);
+  return detail::copy_clamped(out, n, buffer,
+                              detail::write_fixed(buffer, value, precision));
+}
+
+inline FMT_ZMIJ_CONSTEXPR20 auto write_fixed(char* out, size_t n, float value,
+                                             int precision) noexcept -> char* {
+  if (precision < 0) precision = 6;
+  if (precision > 18 || detail::is_constant_evaluated()) {
+    auto size =
+        detail::write_big(out, n, double(value), precision, format::fixed);
+    return detail::clamp_end(out, size, n);
+  }
+  char buffer[buffer_sizes<float>::fixed];
+  if (n >= sizeof(buffer)) return detail::write_fixed(out, value, precision);
+  return detail::copy_clamped(out, n, buffer,
+                              detail::write_fixed(buffer, value, precision));
+}
+
+inline auto write_fixed(char* out, size_t n, long_double value,
+                        int precision) noexcept -> char* {
+  if (double(value) == value)
+    return write_fixed(out, n, double(value), precision);
+  if (precision < 0) precision = 6;
+  auto size = detail::write_big(out, n, value, precision, format::fixed);
+  return size != 0 ? detail::clamp_end(out, size, n) : nullptr;
+}
+
+/// Writes `value` in hexadecimal floating-point notation (like printf's %a) in
+/// its shortest form (e.g. -0x1.8p+1) to `out`, without a null terminator.
+///
+/// Returns a pointer past the last character written; if the representation
+/// exceeds `n` characters, only the first `n` are written.
+inline FMT_ZMIJ_CONSTEXPR20 auto write_hex(char* out, size_t n,
+                                           double value) noexcept -> char* {
+  char buffer[buffer_sizes<double>::hex];
+  if (n >= sizeof(buffer)) return detail::write_hex(out, value);
+  return detail::copy_clamped(out, n, buffer, detail::write_hex(buffer, value));
+}
+
+inline FMT_ZMIJ_CONSTEXPR20 auto write_hex(char* out, size_t n,
+                                           float value) noexcept -> char* {
+  return write_hex(out, n, double(value));
+}
+
+inline auto write_hex(char* out, size_t n, long_double value) noexcept
+    -> char* {
+  char buffer[buffer_sizes<long_double>::hex];
+  if (n >= sizeof(buffer)) return detail::write_hex(out, value);
+  return detail::copy_clamped(out, n, buffer, detail::write_hex(buffer, value));
+}
+
+}  // namespace zmij
+FMT_END_NAMESPACE
+
+FMT_BEGIN_NAMESPACE
+
+template <typename Char, typename Traits, typename Allocator>
+struct is_contiguous<std::basic_string<Char, Traits, Allocator>>
+    : std::true_type {};
+
+namespace detail {
+
+// __builtin_clz is broken in clang with Microsoft codegen:
+// https://github.com/fmtlib/fmt/issues/519.
+#if !FMT_MSC_VERSION
+#  if FMT_HAS_BUILTIN(__builtin_clz) || FMT_GCC_VERSION || FMT_ICC_VERSION
+#    define FMT_BUILTIN_CLZ(n) __builtin_clz(n)
+#  endif
+#  if FMT_HAS_BUILTIN(__builtin_clzll) || FMT_GCC_VERSION || FMT_ICC_VERSION
+#    define FMT_BUILTIN_CLZLL(n) __builtin_clzll(n)
+#  endif
+#endif
+
+// Some compilers masquerade as both MSVC and GCC but otherwise support
+// __builtin_clz and __builtin_clzll, so only define FMT_BUILTIN_CLZ using the
+// MSVC intrinsics if the clz and clzll builtins are not available.
+#if FMT_MSC_VERSION && !defined(FMT_BUILTIN_CLZLL)
+// Avoid Clang with Microsoft CodeGen's -Wunknown-pragmas warning.
+#  ifndef __clang__
+#    pragma intrinsic(_BitScanReverse)
+#    ifdef _WIN64
+#      pragma intrinsic(_BitScanReverse64)
+#    endif
+#  endif
+
+inline auto clz(uint32_t x) -> int {
+  FMT_ASSERT(x != 0, "");
+  unsigned long r = 0;
+  _BitScanReverse(&r, x);
+  return 31 ^ static_cast<int>(r);
+}
+#  define FMT_BUILTIN_CLZ(n) detail::clz(n)
+
+inline auto clzll(uint64_t x) -> int {
+  FMT_ASSERT(x != 0, "");
+  unsigned long r = 0;
+#  ifdef _WIN64
+  _BitScanReverse64(&r, x);
+#  else
+  // Scan the high 32 bits.
+  if (_BitScanReverse(&r, static_cast<uint32_t>(x >> 32)))
+    return 63 ^ static_cast<int>(r + 32);
+  // Scan the low 32 bits.
+  _BitScanReverse(&r, static_cast<uint32_t>(x));
+#  endif
+  return 63 ^ static_cast<int>(r);
+}
+#  define FMT_BUILTIN_CLZLL(n) detail::clzll(n)
+#endif  // FMT_MSC_VERSION && !defined(FMT_BUILTIN_CLZLL)
+
+FMT_CONSTEXPR inline void abort_fuzzing_if(bool condition) {
+  ignore_unused(condition);
+#ifdef FMT_FUZZ
+  if (condition) throw std::runtime_error("fuzzing limit reached");
+#endif
+}
+
+#if defined(FMT_USE_STRING_VIEW)
+template <typename Char> using std_string_view = std::basic_string_view<Char>;
+#else
+template <typename Char> struct std_string_view {
+  operator basic_string_view<Char>() const;
+};
+#endif
+
+template <typename Char, Char... C> struct string_literal {
+  static constexpr Char value[sizeof...(C)] = {C...};
+  constexpr operator basic_string_view<Char>() const {
+    return {value, sizeof...(C)};
+  }
+};
+#if FMT_CPLUSPLUS < 201703L
+template <typename Char, Char... C>
+constexpr Char string_literal<Char, C...>::value[sizeof...(C)];
+#endif
+
+// Implementation of std::bit_cast for pre-C++20.
+template <typename To, typename From, FMT_ENABLE_IF(sizeof(To) == sizeof(From))>
+FMT_CONSTEXPR20 auto bit_cast(const From& from) -> To {
+#ifdef __cpp_lib_bit_cast
+  if (is_constant_evaluated()) return std::bit_cast<To>(from);
+#endif
+  auto to = To();
+  // The cast suppresses a bogus -Wclass-memaccess on GCC.
+  memcpy(static_cast<void*>(&to), &from, sizeof(to));
+  return to;
+}
+
+inline auto is_big_endian() -> bool {
+#ifdef _WIN32
+  return false;
+#elif defined(__BIG_ENDIAN__)
+  return true;
+#elif defined(__BYTE_ORDER__) && defined(__ORDER_BIG_ENDIAN__)
+  return __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__;
+#else
+  struct bytes {
+    char data[sizeof(int)];
+  };
+  return bit_cast<bytes>(1).data[0] == 0;
+#endif
+}
+
+class uint128 {
+ private:
+  uint64_t lo_, hi_;
+
+ public:
+  constexpr uint128(uint64_t hi, uint64_t lo) : lo_(lo), hi_(hi) {}
+  constexpr uint128(uint64_t value = 0) : lo_(value), hi_(0) {}
+
+  template <typename T, FMT_ENABLE_IF(std::is_integral<T>::value)>
+  constexpr explicit operator T() const {
+    return static_cast<T>(lo_);
+  }
+
+  friend constexpr auto operator==(const uint128& lhs, const uint128& rhs)
+      -> bool {
+    return lhs.hi_ == rhs.hi_ && lhs.lo_ == rhs.lo_;
+  }
+  friend constexpr auto operator!=(const uint128& lhs, const uint128& rhs)
+      -> bool {
+    return !(lhs == rhs);
+  }
+  friend constexpr auto operator>(const uint128& lhs, const uint128& rhs)
+      -> bool {
+    return lhs.hi_ != rhs.hi_ ? lhs.hi_ > rhs.hi_ : lhs.lo_ > rhs.lo_;
+  }
+  friend constexpr auto operator|(const uint128& lhs, const uint128& rhs)
+      -> uint128 {
+    return {lhs.hi_ | rhs.hi_, lhs.lo_ | rhs.lo_};
+  }
+  friend constexpr auto operator&(const uint128& lhs, const uint128& rhs)
+      -> uint128 {
+    return {lhs.hi_ & rhs.hi_, lhs.lo_ & rhs.lo_};
+  }
+  friend constexpr auto operator~(const uint128& n) -> uint128 {
+    return {~n.hi_, ~n.lo_};
+  }
+  friend FMT_CONSTEXPR auto operator+(const uint128& lhs, const uint128& rhs)
+      -> uint128 {
+    auto result = uint128(lhs);
+    result += rhs;
+    return result;
+  }
+  friend FMT_CONSTEXPR auto operator*(const uint128& lhs, uint32_t rhs)
+      -> uint128 {
+    FMT_ASSERT(lhs.hi_ == 0, "");
+    uint64_t hi = (lhs.lo_ >> 32) * rhs;
+    uint64_t lo = (lhs.lo_ & ~uint32_t()) * rhs;
+    uint64_t new_lo = (hi << 32) + lo;
+    return {(hi >> 32) + (new_lo < lo ? 1 : 0), new_lo};
+  }
+  friend constexpr auto operator-(const uint128& lhs, uint64_t rhs) -> uint128 {
+    return {lhs.hi_ - (lhs.lo_ < rhs ? 1 : 0), lhs.lo_ - rhs};
+  }
+  FMT_CONSTEXPR auto operator>>(int shift) const -> uint128 {
+    if (shift == 0) return *this;
+    if (shift == 64) return {0, hi_};
+    if (shift > 64) return uint128(0, hi_) >> (shift - 64);
+    return {hi_ >> shift, (hi_ << (64 - shift)) | (lo_ >> shift)};
+  }
+  FMT_CONSTEXPR auto operator<<(int shift) const -> uint128 {
+    if (shift == 0) return *this;
+    if (shift == 64) return {lo_, 0};
+    if (shift > 64) return uint128(lo_, 0) << (shift - 64);
+    return {hi_ << shift | (lo_ >> (64 - shift)), (lo_ << shift)};
+  }
+  FMT_CONSTEXPR auto operator>>=(int shift) -> uint128& {
+    return *this = *this >> shift;
+  }
+  FMT_CONSTEXPR void operator+=(uint128 n) {
+    uint64_t new_lo = lo_ + n.lo_;
+    uint64_t new_hi = hi_ + n.hi_ + (new_lo < lo_ ? 1 : 0);
+    FMT_ASSERT(new_hi >= hi_, "");
+    lo_ = new_lo;
+    hi_ = new_hi;
+  }
+  FMT_CONSTEXPR void operator&=(uint128 n) {
+    lo_ &= n.lo_;
+    hi_ &= n.hi_;
+  }
+
+  FMT_CONSTEXPR20 auto operator+=(uint64_t n) noexcept -> uint128& {
+    if (is_constant_evaluated()) {
+      lo_ += n;
+      hi_ += (lo_ < n ? 1 : 0);
+      return *this;
+    }
+#if FMT_HAS_BUILTIN(__builtin_addcll) && !defined(__ibmxl__)
+    ullong carry;
+    lo_ = __builtin_addcll(lo_, n, 0, &carry);
+    hi_ += carry;
+#elif FMT_HAS_BUILTIN(__builtin_ia32_addcarryx_u64) && !defined(__ibmxl__)
+    ullong result;
+    auto carry = __builtin_ia32_addcarryx_u64(0, lo_, n, &result);
+    lo_ = result;
+    hi_ += carry;
+#elif defined(_MSC_VER) && defined(_M_AMD64)
+    auto carry = _addcarry_u64(0, lo_, n, &lo_);
+    _addcarry_u64(carry, hi_, 0, &hi_);
+#else
+    lo_ += n;
+    hi_ += (lo_ < n ? 1 : 0);
+#endif
+    return *this;
+  }
+};
+
+using uint128_t = conditional_t<FMT_USE_INT128, native_uint128, uint128>;
+
+#ifdef UINTPTR_MAX
+using uintptr_t = ::uintptr_t;
+#else
+using uintptr_t = uint128_t;
+#endif
+
+// Returns the largest possible value for type T. Same as
+// std::numeric_limits<T>::max() but shorter and not affected by the max macro.
+template <typename T> constexpr auto max_value() -> T {
+  return (std::numeric_limits<T>::max)();
+}
+template <typename T> constexpr auto num_bits() -> int {
+  return std::numeric_limits<T>::digits;
+}
+// std::numeric_limits<T>::digits may return 0 for 128-bit ints.
+template <> constexpr auto num_bits<native_int128>() -> int { return 128; }
+template <> constexpr auto num_bits<native_uint128>() -> int { return 128; }
+template <> constexpr auto num_bits<uint128>() -> int { return 128; }
+
+// A heterogeneous bit_cast used for converting 96-bit long double to uint128_t
+// and 128-bit pointers to uint128.
+template <typename To, typename From, FMT_ENABLE_IF(sizeof(To) > sizeof(From))>
+inline auto bit_cast(const From& from) -> To {
+  constexpr auto size = static_cast<int>(sizeof(From) / sizeof(unsigned short));
+  struct data_t {
+    unsigned short value[static_cast<unsigned>(size)];
+  } data = bit_cast<data_t>(from);
+  auto result = To();
+  if (is_big_endian()) {
+    for (int i = 0; i < size; ++i)
+      result = (result << num_bits<unsigned short>()) | data.value[i];
+  } else {
+    for (int i = size - 1; i >= 0; --i)
+      result = (result << num_bits<unsigned short>()) | data.value[i];
+  }
+  return result;
+}
+
+template <typename UInt>
+FMT_CONSTEXPR20 inline auto countl_zero_fallback(UInt n) -> int {
+  int lz = 0;
+  constexpr UInt msb_mask = static_cast<UInt>(1) << (num_bits<UInt>() - 1);
+  for (; (n & msb_mask) == 0; n <<= 1) lz++;
+  return lz;
+}
+
+FMT_CONSTEXPR20 inline auto countl_zero(uint32_t n) -> int {
+#ifdef FMT_BUILTIN_CLZ
+  if (!is_constant_evaluated()) return FMT_BUILTIN_CLZ(n);
+#endif
+  return countl_zero_fallback(n);
+}
+
+FMT_INLINE void assume(bool condition) {
+  (void)condition;
+#if FMT_HAS_BUILTIN(__builtin_assume) && !FMT_ICC_VERSION
+  __builtin_assume(condition);
+#elif FMT_GCC_VERSION
+  if (!condition) __builtin_unreachable();
+#endif
+}
+
+// Attempts to reserve space for n extra characters in the output range.
+// Returns a pointer to the reserved range or a reference to it.
+template <typename OutputIt,
+          FMT_ENABLE_IF(is_back_insert_iterator<OutputIt>::value&&
+                            is_contiguous<typename OutputIt::container>::value)>
+#if FMT_CLANG_VERSION >= 307 && !FMT_ICC_VERSION
+__attribute__((no_sanitize("undefined")))
+#endif
+FMT_CONSTEXPR20 inline auto reserve(OutputIt it, size_t n) ->
+    typename OutputIt::value_type* {
+  auto& c = get_container(it);
+  size_t size = c.size();
+  c.resize(size + n);
+  return &c[size];
+}
+
+template <typename T>
+FMT_CONSTEXPR20 inline auto reserve(basic_appender<T> it, size_t n)
+    -> basic_appender<T> {
+  buffer<T>& buf = get_container(it);
+  buf.try_reserve(buf.size() + n);
+  return it;
+}
+
+template <typename Iterator>
+constexpr auto reserve(Iterator& it, size_t) -> Iterator& {
+  return it;
+}
+
+template <typename OutputIt>
+using reserve_iterator =
+    remove_reference_t<decltype(reserve(std::declval<OutputIt&>(), 0))>;
+
+template <typename T, typename OutputIt>
+constexpr auto to_pointer(OutputIt, size_t) -> T* {
+  return nullptr;
+}
+template <typename T> FMT_CONSTEXPR auto to_pointer(T*& ptr, size_t n) -> T* {
+  T* begin = ptr;
+  ptr += n;
+  return begin;
+}
+template <typename T>
+FMT_CONSTEXPR20 auto to_pointer(basic_appender<T> it, size_t n) -> T* {
+  buffer<T>& buf = get_container(it);
+  buf.try_reserve(buf.size() + n);
+  auto size = buf.size();
+  if (buf.capacity() < size + n) return nullptr;
+  buf.try_resize(size + n);
+  return buf.data() + size;
+}
+
+template <typename OutputIt,
+          FMT_ENABLE_IF(is_back_insert_iterator<OutputIt>::value&&
+                            is_contiguous<typename OutputIt::container>::value)>
+inline auto base_iterator(OutputIt it,
+                          typename OutputIt::container_type::value_type*)
+    -> OutputIt {
+  return it;
+}
+
+template <typename Iterator>
+constexpr auto base_iterator(Iterator, Iterator it) -> Iterator {
+  return it;
+}
+
+// <algorithm> is spectacularly slow to compile in C++20 so use a simple fill_n
+// instead (#1998).
+template <typename OutputIt, typename Size, typename T>
+FMT_CONSTEXPR auto fill_n(OutputIt out, Size count, const T& value)
+    -> OutputIt {
+  for (Size i = 0; i < count; ++i) *out++ = value;
+  return out;
+}
+template <typename T, typename Size>
+FMT_CONSTEXPR20 auto fill_n(T* out, Size count, char value) -> T* {
+  if (is_constant_evaluated()) return fill_n<T*, Size, T>(out, count, value);
+  static_assert(sizeof(T) == 1,
+                "sizeof(T) must be 1 to use char for initialization");
+  memset(out, value, to_unsigned(count));
+  return out + count;
+}
+template <typename T>
+FMT_CONSTEXPR auto fill_n(basic_appender<T> out, size_t n, T value)
+    -> basic_appender<T> {
+  if (is_constant_evaluated(true))
+    return fill_n<basic_appender<T>, size_t, T>(out, n, value);
+  auto& buf = get_container(out);
+  while (n != 0) {
+    buf.try_reserve(buf.size() + n);
+    auto size = buf.size();
+    auto count = min_of(n, buf.capacity() - size);
+    buf.try_resize(size + count);
+    detail::fill_n(buf.data() + size, count, value);
+    n -= count;
+  }
+  return out;
+}
+
+template <typename T, typename V, typename OutputIt>
+FMT_CONSTEXPR auto copy(basic_string_view<V> s, OutputIt out) -> OutputIt {
+  return copy<T>(s.begin(), s.end(), out);
+}
+
+template <typename OutChar, typename InputIt, typename OutputIt>
+FMT_CONSTEXPR FMT_NOINLINE auto copy_noinline(InputIt begin, InputIt end,
+                                              OutputIt out) -> OutputIt {
+  return copy<OutChar>(begin, end, out);
+}
+
+// A public domain branchless UTF-8 decoder by Christopher Wellons:
+// https://github.com/skeeto/branchless-utf8
+/* Decode the next character, c, from s, reporting errors in e.
+ *
+ * Since this is a branchless decoder, four bytes will be read from the
+ * buffer regardless of the actual length of the next character. This
+ * means the buffer _must_ have at least three bytes of zero padding
+ * following the end of the data stream.
+ *
+ * Errors are reported in e, which will be non-zero if the parsed
+ * character was somehow invalid: invalid byte sequence, non-canonical
+ * encoding, or a surrogate half.
+ *
+ * The function returns a pointer to the next character. When an error
+ * occurs, this pointer will be a guess that depends on the particular
+ * error, but it will always advance at least one byte.
+ */
+FMT_CONSTEXPR inline auto utf8_decode(const char* s, uint32_t* c, int* e)
+    -> const char* {
+  constexpr int masks[] = {0x00, 0x7f, 0x1f, 0x0f, 0x07};
+  constexpr uint32_t mins[] = {4194304, 0, 128, 2048, 65536};
+  constexpr int shiftc[] = {0, 18, 12, 6, 0};
+  constexpr int shifte[] = {0, 6, 4, 2, 0};
+
+  int len = "\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\1\0\0\0\0\0\0\0\0\2\2\2\2\3\3\4"
+      [static_cast<unsigned char>(*s) >> 3];
+  // Compute the pointer to the next character early so that the next
+  // iteration can start working on the next character. Neither Clang
+  // nor GCC figure out this reordering on their own.
+  const char* next = s + len + !len;
+
+  using uchar = unsigned char;
+
+  // Assume a four-byte character and load four bytes. Unused bits are
+  // shifted out.
+  *c = uint32_t(uchar(s[0]) & masks[len]) << 18;
+  *c |= uint32_t(uchar(s[1]) & 0x3f) << 12;
+  *c |= uint32_t(uchar(s[2]) & 0x3f) << 6;
+  *c |= uint32_t(uchar(s[3]) & 0x3f) << 0;
+  *c >>= shiftc[len];
+
+  // Accumulate the various error conditions.
+  *e = (*c < mins[len]) << 6;       // non-canonical encoding
+  *e |= ((*c >> 11) == 0x1b) << 7;  // surrogate half?
+  *e |= (*c > 0x10FFFF) << 8;       // out of range?
+  *e |= (uchar(s[1]) & 0xc0) >> 2;
+  *e |= (uchar(s[2]) & 0xc0) >> 4;
+  *e |= uchar(s[3]) >> 6;
+  *e ^= 0x2a;  // top two bits of each tail byte correct?
+  *e >>= shifte[len];
+
+  return next;
+}
+
+constexpr FMT_INLINE_VARIABLE uint32_t invalid_code_point = ~uint32_t();
+
+// Invokes f(cp, sv) for every code point cp in s with sv being the string view
+// corresponding to the code point. cp is invalid_code_point on error.
+template <typename F>
+FMT_CONSTEXPR void for_each_codepoint(string_view s, F f) {
+  auto decode = [f](const char* buf_ptr, const char* ptr) {
+    auto cp = uint32_t();
+    auto error = 0;
+    auto end = utf8_decode(buf_ptr, &cp, &error);
+    bool result = f(error ? invalid_code_point : cp,
+                    string_view(ptr, error ? 1 : to_unsigned(end - buf_ptr)));
+    return result ? (error ? buf_ptr + 1 : end) : nullptr;
+  };
+
+  auto p = s.data();
+  const size_t block_size = 4;  // utf8_decode always reads blocks of 4 chars.
+  if (s.size() >= block_size) {
+    for (auto end = p + s.size() - block_size + 1; p < end;) {
+      p = decode(p, p);
+      if (!p) return;
+    }
+  }
+  auto num_chars_left = to_unsigned(s.data() + s.size() - p);
+  if (num_chars_left == 0) return;
+
+  // Suppress bogus -Wstringop-overflow.
+  if (FMT_GCC_VERSION) num_chars_left &= 3;
+  char buf[2 * block_size - 1] = {};
+  copy<char>(p, p + num_chars_left, buf);
+  const char* buf_ptr = buf;
+  do {
+    auto end = decode(buf_ptr, p);
+    if (!end) return;
+    p += end - buf_ptr;
+    buf_ptr = end;
+  } while (buf_ptr < buf + num_chars_left);
+}
+
+struct wide_cp_range {
+  uint32_t first;
+  uint32_t last;
+};
+
+// Code points with display width 2, i.e. those with the Unicode 16.0.0
+// East_Asian_Width property set to W(ide) or F(ullwidth)
+// (https://www.unicode.org/reports/tr11/), sorted and merged.
+template <typename = void> struct wide_cp_data {
+  static constexpr wide_cp_range ranges[] = {
+      // Hangul Jamo
+      {0x1100, 0x115f},
+      // Miscellaneous Technical
+      {0x231a, 0x231b},
+      {0x2329, 0x232a},
+      {0x23e9, 0x23ec},
+      {0x23f0, 0x23f0},
+      {0x23f3, 0x23f3},
+      // Geometric Shapes
+      {0x25fd, 0x25fe},
+      // Miscellaneous Symbols
+      {0x2614, 0x2615},
+      {0x2630, 0x2637},
+      {0x2648, 0x2653},
+      {0x267f, 0x267f},
+      {0x268a, 0x268f},
+      {0x2693, 0x2693},
+      {0x26a1, 0x26a1},
+      {0x26aa, 0x26ab},
+      {0x26bd, 0x26be},
+      {0x26c4, 0x26c5},
+      {0x26ce, 0x26ce},
+      {0x26d4, 0x26d4},
+      {0x26ea, 0x26ea},
+      {0x26f2, 0x26f3},
+      {0x26f5, 0x26f5},
+      {0x26fa, 0x26fa},
+      {0x26fd, 0x26fd},
+      // Dingbats
+      {0x2705, 0x2705},
+      {0x270a, 0x270b},
+      {0x2728, 0x2728},
+      {0x274c, 0x274c},
+      {0x274e, 0x274e},
+      {0x2753, 0x2755},
+      {0x2757, 0x2757},
+      {0x2795, 0x2797},
+      {0x27b0, 0x27b0},
+      {0x27bf, 0x27bf},
+      // Miscellaneous Symbols and Arrows
+      {0x2b1b, 0x2b1c},
+      {0x2b50, 0x2b50},
+      {0x2b55, 0x2b55},
+      // CJK Radicals Supplement
+      {0x2e80, 0x2e99},
+      {0x2e9b, 0x2ef3},
+      // Kangxi Radicals
+      {0x2f00, 0x2fd5},
+      // Ideographic Description Characters .. CJK Symbols and Punctuation
+      {0x2ff0, 0x303e},
+      // Hiragana
+      {0x3041, 0x3096},
+      // Hiragana .. Katakana
+      {0x3099, 0x30ff},
+      // Bopomofo
+      {0x3105, 0x312f},
+      // Hangul Compatibility Jamo
+      {0x3131, 0x318e},
+      // Kanbun .. CJK Strokes
+      {0x3190, 0x31e5},
+      // CJK Strokes .. Enclosed CJK Letters and Months
+      {0x31ef, 0x321e},
+      // Enclosed CJK Letters and Months
+      {0x3220, 0x3247},
+      // Enclosed CJK Letters and Months .. Yi Syllables
+      {0x3250, 0xa48c},
+      // Yi Radicals
+      {0xa490, 0xa4c6},
+      // Hangul Jamo Extended-A
+      {0xa960, 0xa97c},
+      // Hangul Syllables
+      {0xac00, 0xd7a3},
+      // CJK Compatibility Ideographs
+      {0xf900, 0xfaff},
+      // Vertical Forms
+      {0xfe10, 0xfe19},
+      // CJK Compatibility Forms .. Small Form Variants
+      {0xfe30, 0xfe52},
+      // Small Form Variants
+      {0xfe54, 0xfe66},
+      {0xfe68, 0xfe6b},
+      // Halfwidth and Fullwidth Forms
+      {0xff01, 0xff60},
+      {0xffe0, 0xffe6},
+      // Ideographic Symbols and Punctuation
+      {0x16fe0, 0x16fe4},
+      {0x16ff0, 0x16ff1},
+      // Tangut
+      {0x17000, 0x187f7},
+      // Tangut Components .. Khitan Small Script
+      {0x18800, 0x18cd5},
+      // Khitan Small Script .. Tangut Supplement
+      {0x18cff, 0x18d08},
+      // Kana Extended-B
+      {0x1aff0, 0x1aff3},
+      {0x1aff5, 0x1affb},
+      {0x1affd, 0x1affe},
+      // Kana Supplement .. Kana Extended-A
+      {0x1b000, 0x1b122},
+      // Small Kana Extension
+      {0x1b132, 0x1b132},
+      {0x1b150, 0x1b152},
+      {0x1b155, 0x1b155},
+      {0x1b164, 0x1b167},
+      // Nushu
+      {0x1b170, 0x1b2fb},
+      // Tai Xuan Jing Symbols
+      {0x1d300, 0x1d356},
+      // Counting Rod Numerals
+      {0x1d360, 0x1d376},
+      // Mahjong Tiles
+      {0x1f004, 0x1f004},
+      // Playing Cards
+      {0x1f0cf, 0x1f0cf},
+      // Enclosed Alphanumeric Supplement
+      {0x1f18e, 0x1f18e},
+      {0x1f191, 0x1f19a},
+      // Enclosed Ideographic Supplement
+      {0x1f200, 0x1f202},
+      {0x1f210, 0x1f23b},
+      {0x1f240, 0x1f248},
+      {0x1f250, 0x1f251},
+      {0x1f260, 0x1f265},
+      // Miscellaneous Symbols and Pictographs .. Emoticons, treated as
+      // fully wide per [format.string.std] regardless of East_Asian_Width.
+      {0x1f300, 0x1f64f},
+      // Transport and Map Symbols
+      {0x1f680, 0x1f6c5},
+      {0x1f6cc, 0x1f6cc},
+      {0x1f6d0, 0x1f6d2},
+      {0x1f6d5, 0x1f6d7},
+      {0x1f6dc, 0x1f6df},
+      {0x1f6eb, 0x1f6ec},
+      {0x1f6f4, 0x1f6fc},
+      // Geometric Shapes Extended
+      {0x1f7e0, 0x1f7eb},
+      {0x1f7f0, 0x1f7f0},
+      // Supplemental Symbols and Pictographs, treated as fully wide per
+      // [format.string.std] regardless of East_Asian_Width.
+      {0x1f900, 0x1f9ff},
+      // Symbols and Pictographs Extended-A
+      {0x1fa70, 0x1fa7c},
+      {0x1fa80, 0x1fa89},
+      {0x1fa8f, 0x1fac6},
+      {0x1face, 0x1fadc},
+      {0x1fadf, 0x1fae9},
+      {0x1faf0, 0x1faf8},
+      // CJK Unified Ideographs Extension B (plane 2)
+      {0x20000, 0x2fffd},
+      // CJK Unified Ideographs Extension G (plane 3)
+      {0x30000, 0x3fffd},
+  };
+};
+
+#if FMT_CPLUSPLUS < 201703L
+template <typename T> constexpr wide_cp_range wide_cp_data<T>::ranges[];
+#endif
+
+FMT_CONSTEXPR inline auto display_width_of(uint32_t cp) noexcept -> size_t {
+  if (cp < 0x1100) return 1;
+  size_t lo = 0;
+  size_t hi = sizeof(wide_cp_data<>::ranges) / sizeof(wide_cp_range);
+  while (lo < hi) {
+    size_t mid = lo + (hi - lo) / 2;
+    if (cp < wide_cp_data<>::ranges[mid].first)
+      hi = mid;
+    else if (cp > wide_cp_data<>::ranges[mid].last)
+      lo = mid + 1;
+    else
+      return 2;
+  }
+  return 1;
+}
+
+template <typename T> struct is_integral : std::is_integral<T> {};
+template <> struct is_integral<native_int128> : std::true_type {};
+template <> struct is_integral<uint128_t> : std::true_type {};
+
+template <typename T>
+using is_signed =
+    std::integral_constant<bool, std::numeric_limits<T>::is_signed ||
+                                     std::is_same<T, native_int128>::value>;
+
+template <typename T>
+using is_integer =
+    bool_constant<is_integral<T>::value && !std::is_same<T, bool>::value &&
+                  !std::is_same<T, char>::value &&
+                  !std::is_same<T, wchar_t>::value>;
+
+#if defined(FMT_USE_FLOAT128)
+// Use the provided definition.
+#elif FMT_CLANG_VERSION >= 309 && FMT_HAS_INCLUDE(<quadmath.h>)
+#  define FMT_USE_FLOAT128 1
+#elif FMT_GCC_VERSION && defined(_GLIBCXX_USE_FLOAT128) && \
+    !defined(__STRICT_ANSI__)
+#  define FMT_USE_FLOAT128 1
+#else
+#  define FMT_USE_FLOAT128 0
+#endif
+#if FMT_USE_FLOAT128
+using float128 = __float128;
+#else
+struct float128 {};
+#endif
+
+template <typename T> using is_float128 = std::is_same<T, float128>;
+
+template <typename T> struct is_floating_point : std::is_floating_point<T> {};
+template <> struct is_floating_point<float128> : std::true_type {};
+
+template <typename T, bool = is_floating_point<T>::value>
+struct is_fast_float : bool_constant<std::numeric_limits<T>::is_iec559 &&
+                                     sizeof(T) <= sizeof(double)> {};
+template <typename T> struct is_fast_float<T, false> : std::false_type {};
+
+template <typename T>
+using fast_float_t = conditional_t<sizeof(T) == sizeof(double), double, float>;
+
+template <typename T>
+using is_double_double = bool_constant<std::numeric_limits<T>::digits == 106>;
+
+FMT_API auto allocate(size_t size) -> void*;
+
+// An allocator that uses malloc/free to allow removing dependency on the C++
+// standard library runtime. std::decay is used for back_inserter to be found by
+// ADL when applied to memory_buffer.
+template <typename T> struct allocator : private std::decay<void> {
+  using value_type = T;
+
+  FMT_CONSTEXPR20 auto allocate(size_t n) -> T* {
+    if (n > max_value<size_t>() / sizeof(T)) FMT_THROW(std::bad_alloc());
+#if FMT_USE_CONSTEVAL
+    // Use the builtin directly to avoid C++ runtime dependencies at -O0.
+    if (__builtin_is_constant_evaluated()) return new T[n];
+#endif
+    return static_cast<T*>(detail::allocate(n * sizeof(T)));
+  }
+
+  FMT_CONSTEXPR20 void deallocate(T* p, size_t) {
+#if FMT_USE_CONSTEVAL
+    if (__builtin_is_constant_evaluated()) {
+      delete[] p;
+      return;
+    }
+#endif
+    free(p);
+  }
+
+  constexpr friend auto operator==(allocator, allocator) noexcept -> bool {
+    return true;  // All instances of this allocator are equivalent.
+  }
+  constexpr friend auto operator!=(allocator, allocator) noexcept -> bool {
+    return false;
+  }
+};
+
+template <typename Formatter>
+FMT_CONSTEXPR auto maybe_set_debug_format(Formatter& f, bool set)
+    -> decltype(f.set_debug_format(set)) {
+  f.set_debug_format(set);
+}
+template <typename Formatter>
+FMT_CONSTEXPR void maybe_set_debug_format(Formatter&, ...) {}
+
+}  // namespace detail
+
+FMT_BEGIN_EXPORT
+
+// The number of characters to store in the basic_memory_buffer object itself
+// to avoid dynamic memory allocation.
+enum { inline_buffer_size = 500 };
+
+/**
+ * A dynamically growing memory buffer for trivially copyable/constructible
+ * types with the first `SIZE` elements stored in the object itself. Most
+ * commonly used via the `memory_buffer` alias for `char`.
+ *
+ * **Example**:
+ *
+ *     auto out = fmt::memory_buffer();
+ *     fmt::format_to(std::back_inserter(out), "The answer is {}.", 42);
+ *
+ * This will append "The answer is 42." to `out`. The buffer content can be
+ * converted to `std::string` with `to_string(out)`.
+ */
+template <typename T, size_t SIZE = inline_buffer_size,
+          typename Allocator = detail::allocator<T>>
+class basic_memory_buffer : public detail::buffer<T> {
+ private:
+  T store_[SIZE];
+
+  // Don't inherit from Allocator to avoid generating type_info for it.
+  FMT_NO_UNIQUE_ADDRESS Allocator alloc_;
+
+  // Deallocate memory allocated by the buffer.
+  FMT_CONSTEXPR20 void deallocate() {
+    T* data = this->data();
+    if (data != store_) alloc_.deallocate(data, this->capacity());
+  }
+
+  static FMT_CONSTEXPR20 void grow(detail::buffer<T>& buf, size_t size) {
+    detail::abort_fuzzing_if(size > 5000);
+    auto& self = static_cast<basic_memory_buffer&>(buf);
+    size_t max_size = std::allocator_traits<Allocator>::max_size(self.alloc_);
+    size_t old_capacity = buf.capacity();
+    size_t new_capacity = old_capacity + old_capacity / 2;
+    if (size > new_capacity)
+      new_capacity = size;
+    else if (new_capacity > max_size)
+      new_capacity = max_of(size, max_size);
+    T* old_data = buf.data();
+    T* new_data = self.alloc_.allocate(new_capacity);
+    // The following code doesn't throw, so the raw pointer above doesn't leak.
+    if (detail::is_constant_evaluated()) {
+      for (size_t i = 0; i < new_capacity; ++i) {
+        std::allocator_traits<Allocator>::construct(
+            self.alloc_, new_data + i, i < buf.size() ? old_data[i] : T());
+      }
+    } else {
+      // Suppress a bogus -Wstringop-overflow in gcc 13.1 (#3481).
+      detail::assume(buf.size() <= new_capacity);
+      memcpy(new_data, old_data, buf.size() * sizeof(T));
+    }
+    self.set(new_data, new_capacity);
+    // deallocate must not throw according to the standard, but even if it does,
+    // the buffer already uses the new storage and will deallocate it in
+    // destructor.
+    if (old_data != self.store_) self.alloc_.deallocate(old_data, old_capacity);
+  }
+
+ public:
+  using value_type = T;
+  using const_reference = const T&;
+
+  FMT_CONSTEXPR explicit basic_memory_buffer(
+      const Allocator& alloc = Allocator())
+      : detail::buffer<T>(grow), alloc_(alloc) {
+    this->set(store_, SIZE);
+    if (detail::is_constant_evaluated()) detail::fill_n(store_, SIZE, T());
+  }
+  FMT_CONSTEXPR20 ~basic_memory_buffer() { deallocate(); }
+
+ private:
+  template <typename Alloc = Allocator,
+            FMT_ENABLE_IF(std::allocator_traits<Alloc>::
+                              propagate_on_container_move_assignment::value)>
+  FMT_CONSTEXPR20 auto move_alloc(basic_memory_buffer& other) -> bool {
+    alloc_ = std::move(other.alloc_);
+    return true;
+  }
+  // If the allocator does not propagate then copy the data from other.
+  template <typename Alloc = Allocator,
+            FMT_ENABLE_IF(!std::allocator_traits<Alloc>::
+                              propagate_on_container_move_assignment::value)>
+  FMT_CONSTEXPR20 auto move_alloc(basic_memory_buffer& other) -> bool {
+    T* data = other.data();
+    if (alloc_ == other.alloc_ || data == other.store_) return true;
+    size_t size = other.size();
+    // Perform copy operation, allocators are different.
+    this->resize(size);
+    detail::copy<T>(data, data + size, this->data());
+    return false;
+  }
+
+  // Move data from other to this buffer.
+  FMT_CONSTEXPR20 void move(basic_memory_buffer& other) {
+    T* data = other.data();
+    size_t size = other.size(), capacity = other.capacity();
+    if (!move_alloc(other)) return;
+    if (data == other.store_) {
+      this->set(store_, capacity);
+      detail::copy<T>(other.store_, other.store_ + size, store_);
+    } else {
+      this->set(data, capacity);
+      // Set pointer to the inline array so that delete is not called
+      // when deallocating.
+      other.set(other.store_, 0);
+      other.clear();
+    }
+    this->resize(size);
+  }
+
+ public:
+  /// Constructs a `basic_memory_buffer` object moving the content of the other
+  /// object to it.
+  FMT_CONSTEXPR20 basic_memory_buffer(basic_memory_buffer&& other) noexcept
+      : detail::buffer<T>(grow) {
+    move(other);
+  }
+
+  /// Moves the content of the other `basic_memory_buffer` object to this one.
+  auto operator=(basic_memory_buffer&& other) noexcept -> basic_memory_buffer& {
+    FMT_ASSERT(this != &other, "");
+    deallocate();
+    // Restore the inline buffer: deallocate() leaves this pointing at freed
+    // storage and move() doesn't always replace the pointer before using it.
+    this->set(store_, SIZE);
+    this->clear();
+    move(other);
+    return *this;
+  }
+
+  // Returns a copy of the allocator associated with this buffer.
+  auto get_allocator() const -> Allocator { return alloc_; }
+
+  /// Resizes the buffer to contain `count` elements. If T is a POD type new
+  /// elements may not be initialized.
+  FMT_CONSTEXPR void resize(size_t count) { this->try_resize(count); }
+
+  /// Increases the buffer capacity to `new_capacity`.
+  void reserve(size_t new_capacity) { this->try_reserve(new_capacity); }
+
+  using detail::buffer<T>::append;
+  template <typename ContiguousRange>
+  FMT_CONSTEXPR20 void append(const ContiguousRange& range) {
+    append(range.data(), range.data() + range.size());
+  }
+};
+
+using memory_buffer = basic_memory_buffer<char>;
+
+template <size_t SIZE>
+FMT_NODISCARD auto to_string(const basic_memory_buffer<char, SIZE>& buf)
+    -> std::string {
+  auto size = buf.size();
+  detail::assume(size < std::string().max_size());
+  return {buf.data(), size};
+}
+
+// A writer to a buffered stream. It doesn't own the underlying stream.
+class writer {
+ private:
+  detail::buffer<char>* buf_;
+
+  // We cannot create a file buffer in advance because any write to a FILE may
+  // invalidate it.
+  FILE* file_;
+
+ public:
+  inline writer(FILE* f) : buf_(nullptr), file_(f) {}
+  inline writer(detail::buffer<char>& buf) : buf_(&buf), file_(nullptr) {}
+
+  /// Formats `args` according to specifications in `fmt` and writes the
+  /// output to the file.
+  template <typename... T> void print(format_string<T...> fmt, T&&... args) {
+    if (buf_)
+      fmt::format_to(appender(*buf_), fmt, std::forward<T>(args)...);
+    else
+      fmt::print(file_, fmt, std::forward<T>(args)...);
+  }
+};
+
+class string_buffer {
+ private:
+  std::string str_;
+  detail::container_buffer<std::string> buf_;
+
+ public:
+  inline string_buffer() : buf_(str_) {}
+
+  inline operator writer() { return buf_; }
+  inline auto str() -> std::string& { return str_; }
+};
+
+template <typename T, size_t SIZE, typename Allocator>
+struct is_contiguous<basic_memory_buffer<T, SIZE, Allocator>> : std::true_type {
+};
+
+// Suppress a misleading warning in older versions of clang.
+FMT_PRAGMA_CLANG(diagnostic push)
+FMT_PRAGMA_CLANG(diagnostic ignored "-Wweak-vtables")
+
+/// An error reported from a formatting function.
+class FMT_SO_VISIBILITY("default") format_error : public std::runtime_error {
+ public:
+  using std::runtime_error::runtime_error;
+};
+
+FMT_PRAGMA_CLANG(diagnostic pop)
+
+class loc_value;
+
+FMT_END_EXPORT
+namespace detail {
+FMT_API auto write_console(int fd, string_view text) -> bool;
+FMT_API void print(FILE*, string_view);
+}  // namespace detail
+
+namespace detail {
+template <typename Char, size_t N> struct fixed_string {
+  FMT_CONSTEXPR fixed_string(const Char (&s)[N]) {
+    detail::copy<Char, const Char*, Char*>(static_cast<const Char*>(s), s + N,
+                                           data);
+  }
+  Char data[N] = {};
+};
+
+// Converts a compile-time string to basic_string_view.
+FMT_EXPORT template <typename Char, size_t N>
+constexpr auto compile_string_to_view(const Char (&s)[N])
+    -> basic_string_view<Char> {
+  // Remove trailing NUL character if needed. Won't be present if this is used
+  // with a raw character array (i.e. not defined as a string).
+  return {s, N - (std::char_traits<Char>::to_int_type(s[N - 1]) == 0 ? 1 : 0)};
+}
+FMT_EXPORT template <typename Char>
+constexpr auto compile_string_to_view(basic_string_view<Char> s)
+    -> basic_string_view<Char> {
+  return s;
+}
+
+// Returns true if value is negative, false otherwise.
+// Same as `value < 0` but doesn't produce warnings if T is an unsigned type.
+template <typename T, FMT_ENABLE_IF(is_signed<T>::value)>
+constexpr auto is_negative(T value) -> bool {
+  return value < 0;
+}
+template <typename T, FMT_ENABLE_IF(!is_signed<T>::value)>
+constexpr auto is_negative(T) -> bool {
+  return false;
+}
+
+// Smallest of uint32_t, uint64_t, uint128_t that is large enough to
+// represent all values of an integral type T.
+template <typename T>
+using uint32_or_64_or_128_t =
+    conditional_t<num_bits<T>() <= 32 && !FMT_REDUCE_INT_INSTANTIATIONS,
+                  uint32_t,
+                  conditional_t<num_bits<T>() <= 64, uint64_t, uint128_t>>;
+template <typename T>
+using uint64_or_128_t = conditional_t<num_bits<T>() <= 64, uint64_t, uint128_t>;
+
+#define FMT_POWERS_OF_10(factor)                                  \
+  factor * 10, (factor) * 100, (factor) * 1000, (factor) * 10000, \
+      (factor) * 100000, (factor) * 1000000, (factor) * 10000000, \
+      (factor) * 100000000, (factor) * 1000000000
+
+// Converts value in the range [0, 100) to a string. GCC generates a bit better
+// code when value is pointer-size (https://www.godbolt.org/z/5fEPMT1cc).
+inline auto digits2(size_t value) noexcept -> const char* {
+  // Align data since unaligned access may be slower when crossing a
+  // hardware-specific boundary.
+  alignas(2) static constexpr char data[] =
+      "0001020304050607080910111213141516171819"
+      "2021222324252627282930313233343536373839"
+      "4041424344454647484950515253545556575859"
+      "6061626364656667686970717273747576777879"
+      "8081828384858687888990919293949596979899";
+  return &data[value * 2];
+}
+
+// Given i in [0, 100), let x be the first 7 digits after
+// the decimal point of i / 100 in base 2, the first 2 bytes
+// after digits2_i(x) is the string representation of i.
+inline auto digits2_i(size_t value) noexcept -> const char* {
+  alignas(2) static constexpr char data[] =
+      "00010203  0405060707080910  1112"
+      "131414151617  18192021  222324  "
+      "25262728  2930313232333435  3637"
+      "383939404142  43444546  474849  "
+      "50515253  5455565757585960  6162"
+      "636464656667  68697071  727374  "
+      "75767778  7980818282838485  8687"
+      "888989909192  93949596  979899  ";
+  return &data[value * 2];
+}
+
+template <typename Char> constexpr auto getsign(sign s) -> Char {
+  return static_cast<Char>(static_cast<char>(
+      ((' ' << 24) | ('+' << 16) | ('-' << 8)) >> (static_cast<int>(s) * 8)));
+}
+
+template <typename T> FMT_CONSTEXPR auto count_digits_fallback(T n) -> int {
+  int count = 1;
+  for (;;) {
+    // Integer division is slow so do it for a group of four digits instead
+    // of for every digit. The idea comes from the talk by Alexandrescu
+    // "Three Optimization Tips for C++". See speed-test for a comparison.
+    if (n < 10) return count;
+    if (n < 100) return count + 1;
+    if (n < 1000) return count + 2;
+    if (n < 10000) return count + 3;
+    n /= 10000u;
+    count += 4;
+  }
+}
+#ifdef FMT_BUILTIN_CLZLL
+// It is a separate function rather than a part of count_digits to workaround
+// the lack of static constexpr in constexpr functions.
+inline auto do_count_digits(uint64_t n) -> int {
+  // This has comparable performance to the version by Kendall Willets
+  // (https://github.com/fmtlib/format-benchmark/tree/master/src/digits10)
+  // but uses smaller tables.
+  // Maps bsr(n) to ceil(log10(pow(2, bsr(n) + 1) - 1)).
+  static constexpr uint8_t bsr2log10[] = {
+      1,  1,  1,  2,  2,  2,  3,  3,  3,  4,  4,  4,  4,  5,  5,  5,
+      6,  6,  6,  7,  7,  7,  7,  8,  8,  8,  9,  9,  9,  10, 10, 10,
+      10, 11, 11, 11, 12, 12, 12, 13, 13, 13, 13, 14, 14, 14, 15, 15,
+      15, 16, 16, 16, 16, 17, 17, 17, 18, 18, 18, 19, 19, 19, 19, 20};
+  auto t = bsr2log10[FMT_BUILTIN_CLZLL(n | 1) ^ 63];
+  static constexpr uint64_t zero_or_powers_of_10[] = {
+      0, 0, FMT_POWERS_OF_10(1U), FMT_POWERS_OF_10(1000000000ULL),
+      10000000000000000000ULL};
+  return t - (n < zero_or_powers_of_10[t]);
+}
+#endif
+
+// Returns the number of decimal digits in n. Leading zeros are not counted
+// except for n == 0 in which case count_digits returns 1.
+FMT_CONSTEXPR20 inline auto count_digits(uint64_t n) -> int {
+#ifdef FMT_BUILTIN_CLZLL
+  if (!is_constant_evaluated() && !FMT_OPTIMIZE_SIZE) return do_count_digits(n);
+#endif
+  return count_digits_fallback(n);
+}
+
+// Counts the number of digits in n. BITS = log2(radix).
+template <int BITS, typename UInt>
+FMT_CONSTEXPR auto count_digits(UInt n) -> int {
+#ifdef FMT_BUILTIN_CLZ
+  if (!is_constant_evaluated() && num_bits<UInt>() == 32)
+    return (FMT_BUILTIN_CLZ(static_cast<uint32_t>(n) | 1) ^ 31) / BITS + 1;
+#endif
+  // Lambda avoids unreachable code warnings from NVHPC.
+  return [](UInt m) {
+    int num_digits = 0;
+    do {
+      ++num_digits;
+    } while ((m >>= BITS) != 0);
+    return num_digits;
+  }(n);
+}
+
+#ifdef FMT_BUILTIN_CLZ
+// It is a separate function rather than a part of count_digits to workaround
+// the lack of static constexpr in constexpr functions.
+FMT_INLINE auto do_count_digits(uint32_t n) -> int {
+// An optimization by Kendall Willets from https://bit.ly/3uOIQrB.
+// This increments the upper 32 bits (log10(T) - 1) when >= T is added.
+#  define FMT_INC(T) (((sizeof(#T) - 1ull) << 32) - T)
+  static constexpr uint64_t table[] = {
+      FMT_INC(0),          FMT_INC(0),          FMT_INC(0),           // 8
+      FMT_INC(10),         FMT_INC(10),         FMT_INC(10),          // 64
+      FMT_INC(100),        FMT_INC(100),        FMT_INC(100),         // 512
+      FMT_INC(1000),       FMT_INC(1000),       FMT_INC(1000),        // 4096
+      FMT_INC(10000),      FMT_INC(10000),      FMT_INC(10000),       // 32k
+      FMT_INC(100000),     FMT_INC(100000),     FMT_INC(100000),      // 256k
+      FMT_INC(1000000),    FMT_INC(1000000),    FMT_INC(1000000),     // 2048k
+      FMT_INC(10000000),   FMT_INC(10000000),   FMT_INC(10000000),    // 16M
+      FMT_INC(100000000),  FMT_INC(100000000),  FMT_INC(100000000),   // 128M
+      FMT_INC(1000000000), FMT_INC(1000000000), FMT_INC(1000000000),  // 1024M
+      FMT_INC(1000000000), FMT_INC(1000000000)                        // 4B
+  };
+  auto inc = table[FMT_BUILTIN_CLZ(n | 1) ^ 31];
+  return static_cast<int>((n + inc) >> 32);
+}
+#endif
+
+// Optional version of count_digits for better performance on 32-bit platforms.
+FMT_CONSTEXPR20 inline auto count_digits(uint32_t n) -> int {
+#ifdef FMT_BUILTIN_CLZ
+  if (!is_constant_evaluated() && !FMT_OPTIMIZE_SIZE) return do_count_digits(n);
+#endif
+  return count_digits_fallback(n);
+}
+
+template <typename Int> constexpr auto digits10() noexcept -> int {
+  return std::numeric_limits<Int>::digits10;
+}
+template <> constexpr auto digits10<native_int128>() noexcept -> int {
+  return 38;
+}
+template <> constexpr auto digits10<uint128_t>() noexcept -> int { return 38; }
+
+template <typename Char> struct thousands_sep_result {
+  std::string grouping;
+  Char thousands_sep;
+};
+
+template <typename Char>
+FMT_API auto thousands_sep_impl(locale_ref loc) -> thousands_sep_result<Char>;
+template <typename Char>
+inline auto thousands_sep(locale_ref loc) -> thousands_sep_result<Char> {
+  auto result = thousands_sep_impl<char>(loc);
+  return {std::move(result.grouping), Char(result.thousands_sep)};
+}
+template <>
+inline auto thousands_sep(locale_ref loc) -> thousands_sep_result<wchar_t> {
+  return thousands_sep_impl<wchar_t>(loc);
+}
+
+template <typename Char>
+FMT_API FMT_NOINLINE auto decimal_point_impl(locale_ref loc) -> Char;
+template <typename Char> inline auto decimal_point(locale_ref loc) -> Char {
+  return Char(decimal_point_impl<char>(loc));
+}
+template <> inline auto decimal_point(locale_ref loc) -> wchar_t {
+  return decimal_point_impl<wchar_t>(loc);
+}
+
+#ifndef FMT_HEADER_ONLY
+FMT_BEGIN_EXPORT
+extern template FMT_API auto thousands_sep_impl<char>(locale_ref)
+    -> thousands_sep_result<char>;
+extern template FMT_API auto thousands_sep_impl<wchar_t>(locale_ref)
+    -> thousands_sep_result<wchar_t>;
+extern template FMT_API auto decimal_point_impl(locale_ref) -> char;
+extern template FMT_API auto decimal_point_impl(locale_ref) -> wchar_t;
+FMT_END_EXPORT
+#endif  // FMT_HEADER_ONLY
+
+// Writes a two-digit value to out.
+template <typename Char>
+FMT_CONSTEXPR20 FMT_INLINE void write2digits(Char* out, size_t value) {
+  if (!is_constant_evaluated() && std::is_same<Char, char>::value &&
+      !FMT_OPTIMIZE_SIZE) {
+    memcpy(out, digits2(value), 2);
+    return;
+  }
+  *out++ = static_cast<Char>('0' + value / 10);
+  *out = static_cast<Char>('0' + value % 10);
+}
+
+template <typename Char>
+FMT_INLINE void write2digits_i(Char* out, size_t value) {
+  if (std::is_same<Char, char>::value && !FMT_OPTIMIZE_SIZE) {
+    memcpy(out, digits2_i(value), 2);
+    return;
+  }
+  *out++ = static_cast<Char>(digits2_i(value)[0]);
+  *out = static_cast<Char>(digits2_i(value)[1]);
+}
+
+// Formats a decimal unsigned integer value writing to out pointing to a buffer
+// of specified size. The caller must ensure that the buffer is large enough.
+template <typename Char, typename UInt>
+FMT_CONSTEXPR20 auto do_format_decimal(Char* out, UInt value, int size)
+    -> Char* {
+  FMT_ASSERT(size >= count_digits(value), "invalid digit count");
+  unsigned n = to_unsigned(size);
+  while (value >= 100) {
+    n -= 2;
+    if (!is_constant_evaluated() && num_bits<UInt>() == 32) {
+      auto p = value * static_cast<uint64_t>((1ull << 39) / 100 + 1);
+      write2digits_i(out + n, p >> (39 - 7) & ((1 << 7) - 1));
+      value = static_cast<UInt>(p >> 39) +
+              (static_cast<UInt>(value >= (100u << 25)) << 25);
+    } else {
+      // Integer division is slow so do it for a group of two digits instead
+      // of for every digit. The idea comes from the talk by Alexandrescu
+      // "Three Optimization Tips for C++". See speed-test for a comparison.
+      write2digits(out + n, static_cast<unsigned>(value % 100));
+      value /= 100;
+    }
+  }
+  if (value >= 10) {
+    n -= 2;
+    write2digits(out + n, static_cast<unsigned>(value));
+  } else {
+    out[--n] = static_cast<Char>('0' + value);
+  }
+  return out + n;
+}
+
+#if FMT_USE_INT128
+// Divides n by 10^19 and stores the remainder in rem. 128-bit division is a
+// slow library call, so this uses a precomputed reciprocal of the normalized
+// divisor (Moller & Granlund, "Improved division by invariant integers").
+FMT_CONSTEXPR20 inline auto divmod_pow10_19(uint128_t n, uint64_t& rem)
+    -> uint128_t {
+  const uint64_t d = 10000000000000000000ULL;
+  const uint64_t v = 0xd83c94fb6d2ac34a;  // floor((2^128 - 1) / d) - 2^64
+  uint64_t qhi = 0;
+  if ((n >> 64) >= d) {
+    qhi = 1;
+    n -= static_cast<uint128_t>(d) << 64;
+  }
+  auto p = static_cast<uint128_t>(v) * static_cast<uint64_t>(n >> 64) + n;
+  auto q = static_cast<uint64_t>(p >> 64) + 1;
+  auto r = static_cast<uint64_t>(n) - q * d;
+  if (r > static_cast<uint64_t>(p)) {
+    --q;
+    r += d;
+  }
+  if (r >= d) {
+    ++q;
+    r -= d;
+  }
+  rem = r;
+  return (static_cast<uint128_t>(qhi) << 64) | q;
+}
+
+FMT_CONSTEXPR20 inline auto count_digits(uint128_t n) -> int {
+  if ((n >> 64) == 0) return count_digits(static_cast<uint64_t>(n));
+  const uint64_t pow10_19 = 10000000000000000000ULL;
+  // 2^128 < 10^39, and a smaller n divided by 10^19 fits in 64 bits.
+  if (n >= static_cast<uint128_t>(pow10_19) * pow10_19) return 39;
+  uint64_t rem = 0;
+  return count_digits(static_cast<uint64_t>(divmod_pow10_19(n, rem))) + 19;
+}
+
+// Avoid slow 128-bit division by formatting 64-bit chunks of 19 digits each.
+template <typename Char>
+FMT_CONSTEXPR20 auto do_format_decimal(Char* out, uint128_t value, int size)
+    -> Char* {
+  FMT_ASSERT(size >= count_digits(value), "invalid digit count");
+  unsigned pos = to_unsigned(size);
+  while ((value >> 64) != 0) {
+    uint64_t chunk = 0;
+    value = divmod_pow10_19(value, chunk);
+    pos -= 19;
+    fill_n(out + pos, 19, Char('0'));
+    do_format_decimal(out + pos, chunk, 19);
+  }
+  return do_format_decimal(out, static_cast<uint64_t>(value),
+                           static_cast<int>(pos));
+}
+#endif  // FMT_USE_INT128
+
+template <typename Char, typename UInt>
+FMT_CONSTEXPR FMT_INLINE auto format_decimal(Char* out, UInt value,
+                                             int num_digits) -> Char* {
+  do_format_decimal(out, value, num_digits);
+  return out + num_digits;
+}
+
+template <typename Char, typename UInt, typename OutputIt,
+          FMT_ENABLE_IF(!std::is_pointer<remove_cvref_t<OutputIt>>::value)>
+FMT_CONSTEXPR auto format_decimal(OutputIt out, UInt value, int num_digits)
+    -> OutputIt {
+  if (auto ptr = to_pointer<Char>(out, to_unsigned(num_digits))) {
+    do_format_decimal(ptr, value, num_digits);
+    return out;
+  }
+  // Buffer is large enough to hold all digits (digits10 + 1).
+  char buffer[digits10<UInt>() + 1];
+  if (is_constant_evaluated()) fill_n(buffer, sizeof(buffer), '\0');
+  do_format_decimal(buffer, value, num_digits);
+  return copy_noinline<Char>(buffer, buffer + num_digits, out);
+}
+
+template <typename Char, typename UInt>
+FMT_CONSTEXPR auto do_format_base2e(int base_bits, Char* out, UInt value,
+                                    int size, bool upper = false) -> Char* {
+  out += size;
+  do {
+    const char* digits = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    unsigned digit = static_cast<unsigned>(value & ((1u << base_bits) - 1));
+    *--out = static_cast<Char>(base_bits < 4 ? static_cast<char>('0' + digit)
+                                             : digits[digit]);
+  } while ((value >>= base_bits) != 0);
+  return out;
+}
+
+// Formats an unsigned integer in the power of two base (binary, octal, hex).
+template <typename Char, typename UInt>
+FMT_CONSTEXPR auto format_base2e(int base_bits, Char* out, UInt value,
+                                 int num_digits, bool upper = false) -> Char* {
+  do_format_base2e(base_bits, out, value, num_digits, upper);
+  return out + num_digits;
+}
+
+template <typename Char, typename OutputIt, typename UInt,
+          FMT_ENABLE_IF(is_back_insert_iterator<OutputIt>::value)>
+FMT_CONSTEXPR inline auto format_base2e(int base_bits, OutputIt out, UInt value,
+                                        int num_digits, bool upper = false)
+    -> OutputIt {
+  if (auto ptr = to_pointer<Char>(out, to_unsigned(num_digits))) {
+    format_base2e(base_bits, ptr, value, num_digits, upper);
+    return out;
+  }
+  // Make buffer large enough for any base.
+  char buffer[num_bits<UInt>()];
+  if (is_constant_evaluated()) fill_n(buffer, sizeof(buffer), '\0');
+  format_base2e(base_bits, buffer, value, num_digits, upper);
+  return detail::copy_noinline<Char>(buffer, buffer + num_digits, out);
+}
+
+// A converter from UTF-8 to UTF-16.
+class utf8_to_utf16 {
+ private:
+  basic_memory_buffer<wchar_t> buffer_;
+
+ public:
+  FMT_API explicit utf8_to_utf16(string_view s);
+  inline operator basic_string_view<wchar_t>() const {
+    return {&buffer_[0], size()};
+  }
+  inline auto size() const -> size_t { return buffer_.size() - 1; }
+  inline auto c_str() const -> const wchar_t* { return &buffer_[0]; }
+  inline auto str() const -> std::wstring { return {&buffer_[0], size()}; }
+};
+
+enum class to_utf8_error_policy { abort, replace, wtf };
+
+inline void to_utf8_3bytes(buffer<char>& buf, uint32_t cp) {
+  buf.push_back(static_cast<char>(0xe0 | (cp >> 12)));
+  buf.push_back(static_cast<char>(0x80 | ((cp & 0xfff) >> 6)));
+  buf.push_back(static_cast<char>(0x80 | (cp & 0x3f)));
+}
+
+// A converter from UTF-16/UTF-32 (host endian) to UTF-8.
+template <typename WChar, typename Buffer = memory_buffer> class to_utf8 {
+ private:
+  Buffer buffer_;
+
+ public:
+  to_utf8() {}
+  explicit to_utf8(basic_string_view<WChar> s,
+                   to_utf8_error_policy policy = to_utf8_error_policy::abort) {
+    static_assert(sizeof(WChar) == 2 || sizeof(WChar) == 4,
+                  "expected utf16 or utf32");
+    if (!convert(s, policy)) {
+      FMT_THROW(std::runtime_error(sizeof(WChar) == 2 ? "invalid utf16"
+                                                      : "invalid utf32"));
+    }
+  }
+  operator string_view() const { return string_view(&buffer_[0], size()); }
+  auto size() const -> size_t { return buffer_.size() - 1; }
+  auto c_str() const -> const char* { return &buffer_[0]; }
+  auto str() const -> std::string { return std::string(&buffer_[0], size()); }
+
+  // Performs conversion returning a bool instead of throwing exception on
+  // conversion error. This method may still throw in case of memory allocation
+  // error.
+  auto convert(basic_string_view<WChar> s,
+               to_utf8_error_policy policy = to_utf8_error_policy::abort)
+      -> bool {
+    if (!convert(buffer_, s, policy)) return false;
+    buffer_.push_back(0);
+    return true;
+  }
+  static auto convert(Buffer& buf, basic_string_view<WChar> s,
+                      to_utf8_error_policy policy = to_utf8_error_policy::abort)
+      -> bool {
+    for (auto p = s.begin(); p != s.end(); ++p) {
+      uint32_t c = static_cast<uint32_t>(*p);
+      if (sizeof(WChar) == 2 && c >= 0xd800 && c <= 0xdfff) {
+        // Handle a surrogate pair.
+        ++p;
+        if (p == s.end() || (c & 0xfc00) != 0xd800 || (*p & 0xfc00) != 0xdc00) {
+          switch (policy) {
+          case to_utf8_error_policy::abort: return false;
+          case to_utf8_error_policy::replace:
+            buf.append(string_view("\xEF\xBF\xBD"));
+            break;
+          case to_utf8_error_policy::wtf: to_utf8_3bytes(buf, c); break;
+          }
+          --p;
+          continue;
+        }
+        c = (c << 10) + static_cast<uint32_t>(*p) - 0x35fdc00;
+      }
+      if (c < 0x80) {
+        buf.push_back(static_cast<char>(c));
+      } else if (c < 0x800) {
+        buf.push_back(static_cast<char>(0xc0 | (c >> 6)));
+        buf.push_back(static_cast<char>(0x80 | (c & 0x3f)));
+      } else if ((c >= 0x800 && c <= 0xd7ff) || (c >= 0xe000 && c <= 0xffff)) {
+        to_utf8_3bytes(buf, c);
+      } else if (c >= 0x10000 && c <= 0x10ffff) {
+        buf.push_back(static_cast<char>(0xf0 | (c >> 18)));
+        buf.push_back(static_cast<char>(0x80 | ((c & 0x3ffff) >> 12)));
+        buf.push_back(static_cast<char>(0x80 | ((c & 0xfff) >> 6)));
+        buf.push_back(static_cast<char>(0x80 | (c & 0x3f)));
+      } else {
+        return false;
+      }
+    }
+    return true;
+  }
+};
+
+// Type-specific information about floating-point formats.
+template <typename T, typename Enable = void> struct float_info;
+
+template <> struct float_info<float> {
+  using carrier_uint = uint32_t;
+  static constexpr int exponent_bits = 8;
+};
+
+template <> struct float_info<double> {
+  using carrier_uint = uint64_t;
+  static constexpr int exponent_bits = 11;
+};
+
+// An 80- or 128-bit floating point number.
+template <typename T>
+struct float_info<T, enable_if_t<std::numeric_limits<T>::digits == 64 ||
+                                 std::numeric_limits<T>::digits == 113 ||
+                                 is_float128<T>::value>> {
+  using carrier_uint = detail::uint128_t;
+  static const int exponent_bits = 15;
+};
+
+// A double-double floating point number.
+template <typename T>
+struct float_info<T, enable_if_t<is_double_double<T>::value>> {
+  using carrier_uint = detail::uint128_t;
+};
+
+// A decimal floating-point number significand * pow(10, exponent).
+template <typename T> struct decimal_fp {
+  using significand_type = typename zmij::detail::float_traits<T>::sig_type;
+  significand_type significand;
+  int exponent;
+};
+
+// Returns the shortest decimal representation of a finite x that round-trips,
+// without trailing zeros.
+template <typename T> FMT_API auto to_decimal(T x) noexcept -> decimal_fp<T>;
+
+// Returns true iff Float has the implicit bit which is not stored.
+template <typename Float> constexpr auto has_implicit_bit() -> bool {
+  // An 80-bit FP number has a 64-bit significand an no implicit bit.
+  return std::numeric_limits<Float>::digits != 64;
+}
+
+// Returns the number of significand bits stored in Float. The implicit bit is
+// not counted since it is not stored.
+template <typename Float> constexpr auto num_significand_bits() -> int {
+  // std::numeric_limits may not support __float128.
+  return is_float128<Float>() ? 112
+                              : (std::numeric_limits<Float>::digits -
+                                 (has_implicit_bit<Float>() ? 1 : 0));
+}
+
+template <typename Float>
+constexpr auto exponent_mask() -> typename float_info<Float>::carrier_uint {
+  using float_uint = typename float_info<Float>::carrier_uint;
+  return ((float_uint(1) << float_info<Float>::exponent_bits) - 1)
+         << num_significand_bits<Float>();
+}
+template <typename Float> constexpr auto exponent_bias() -> int {
+  // std::numeric_limits may not support __float128.
+  return is_float128<Float>() ? 16383
+                              : std::numeric_limits<Float>::max_exponent - 1;
+}
+
+FMT_CONSTEXPR inline auto compute_exp_size(int exp) -> int {
+  auto prefix_size = 2;  // sign + 'e'
+  auto abs_exp = exp >= 0 ? exp : -exp;
+  if (abs_exp < 100) return prefix_size + 2;
+  return prefix_size + (abs_exp >= 1000 ? 4 : 3);
+}
+
+// Writes the exponent exp in the form "[+-]d{2,3}" to buffer.
+template <typename Char, typename OutputIt>
+FMT_CONSTEXPR auto write_exponent(int exp, OutputIt out) -> OutputIt {
+  FMT_ASSERT(-10000 < exp && exp < 10000, "exponent out of range");
+  if (exp < 0) {
+    *out++ = static_cast<Char>('-');
+    exp = -exp;
+  } else {
+    *out++ = static_cast<Char>('+');
+  }
+  auto uexp = static_cast<uint32_t>(exp);
+  if (is_constant_evaluated()) {
+    if (uexp < 10) *out++ = '0';
+    return format_decimal<Char>(out, uexp, count_digits(uexp));
+  }
+  if (uexp >= 100u) {
+    const char* top = digits2(uexp / 100);
+    if (uexp >= 1000u) *out++ = static_cast<Char>(top[0]);
+    *out++ = static_cast<Char>(top[1]);
+    uexp %= 100;
+  }
+  const char* d = digits2(uexp);
+  *out++ = static_cast<Char>(d[0]);
+  *out++ = static_cast<Char>(d[1]);
+  return out;
+}
+
+// A floating-point number f * pow(2, e) where F is an unsigned type.
+template <typename F> struct basic_fp {
+  F f;
+  int e;
+
+  constexpr basic_fp() : f(0), e(0) {}
+
+  // Constructs fp from an IEEE754 floating-point number.
+  template <typename Float> FMT_CONSTEXPR basic_fp(Float n) { assign(n); }
+
+  // Assigns n to this and return true iff predecessor is closer than successor.
+  template <typename Float, FMT_ENABLE_IF(!is_double_double<Float>::value)>
+  FMT_CONSTEXPR auto assign(Float n) -> bool {
+    static_assert(std::numeric_limits<Float>::digits <= 113, "unsupported FP");
+    // Assume Float is in the format [sign][exponent][significand].
+    using carrier_uint = typename float_info<Float>::carrier_uint;
+    const auto num_float_significand_bits =
+        detail::num_significand_bits<Float>();
+    const auto implicit_bit = carrier_uint(1) << num_float_significand_bits;
+    const auto significand_mask = implicit_bit - 1;
+    auto u = bit_cast<carrier_uint>(n);
+    f = static_cast<F>(u & significand_mask);
+    auto biased_e = static_cast<int>((u & exponent_mask<Float>()) >>
+                                     num_float_significand_bits);
+    // The predecessor is closer if n is a normalized power of 2 (f == 0)
+    // other than the smallest normalized number (biased_e > 1).
+    auto is_predecessor_closer = f == 0 && biased_e > 1;
+    if (biased_e == 0)
+      biased_e = 1;  // Subnormals use biased exponent 1 (min exponent).
+    else if (has_implicit_bit<Float>())
+      f += static_cast<F>(implicit_bit);
+    e = biased_e - exponent_bias<Float>() - num_float_significand_bits;
+    if (!has_implicit_bit<Float>()) ++e;
+    return is_predecessor_closer;
+  }
+
+  template <typename Float, FMT_ENABLE_IF(is_double_double<Float>::value)>
+  FMT_CONSTEXPR auto assign(Float n) -> bool {
+    static_assert(std::numeric_limits<double>::is_iec559, "unsupported FP");
+    return assign(static_cast<double>(n));
+  }
+};
+
+template <typename T, bool doublish = num_bits<T>() == num_bits<double>()>
+using convert_float_result =
+    conditional_t<std::is_same<T, float>::value || doublish, double, T>;
+
+template <typename T>
+constexpr auto convert_float(T value) -> convert_float_result<T> {
+  return static_cast<convert_float_result<T>>(value);
+}
+
+template <bool C, typename T, typename F, FMT_ENABLE_IF(C)>
+auto select(T true_value, F) -> T {
+  return true_value;
+}
+template <bool C, typename T, typename F, FMT_ENABLE_IF(!C)>
+auto select(T, F false_value) -> F {
+  return false_value;
+}
+
+template <typename Char, typename OutputIt>
+FMT_CONSTEXPR FMT_NOINLINE auto fill(OutputIt it, size_t n,
+                                     const basic_specs& specs) -> OutputIt {
+  auto fill_size = specs.fill_size();
+  if (fill_size == 1) return detail::fill_n(it, n, specs.fill_unit<Char>());
+  if (const Char* data = specs.fill<Char>()) {
+    for (size_t i = 0; i < n; ++i) it = copy<Char>(data, data + fill_size, it);
+  }
+  return it;
+}
+
+// Writes the output of f, padded according to format specifications in specs.
+// size: output size in code units.
+// width: output display width in (terminal) column positions.
+template <typename Char, align default_align = align::left, typename OutputIt,
+          typename F>
+FMT_CONSTEXPR auto write_padded(OutputIt out, const format_specs& specs,
+                                size_t size, size_t width, F&& f) -> OutputIt {
+  static_assert(default_align == align::left || default_align == align::right,
+                "");
+  unsigned spec_width = to_unsigned(specs.width);
+  size_t padding = spec_width > width ? spec_width - width : 0;
+  // Shifts are encoded as string literals because static constexpr is not
+  // supported in constexpr functions.
+  auto* shifts =
+      default_align == align::left ? "\x1f\x1f\x00\x01" : "\x00\x1f\x00\x01";
+  size_t left_padding = padding >> shifts[static_cast<int>(specs.align())];
+  size_t right_padding = padding - left_padding;
+  auto it = reserve(out, size + padding * specs.fill_size());
+  if (left_padding != 0) it = fill<Char>(it, left_padding, specs);
+  it = f(it);
+  if (right_padding != 0) it = fill<Char>(it, right_padding, specs);
+  return base_iterator(out, it);
+}
+
+template <typename Char, align default_align = align::left, typename OutputIt,
+          typename F>
+constexpr auto write_padded(OutputIt out, const format_specs& specs,
+                            size_t size, F&& f) -> OutputIt {
+  return write_padded<Char, default_align>(out, specs, size, size, f);
+}
+
+template <typename Char, align default_align = align::left, typename OutputIt>
+FMT_CONSTEXPR auto write_bytes(OutputIt out, string_view bytes,
+                               const format_specs& specs = {}) -> OutputIt {
+  return write_padded<Char, default_align>(
+      out, specs, bytes.size(), [bytes](reserve_iterator<OutputIt> it) {
+        const char* data = bytes.data();
+        return copy<Char>(data, data + bytes.size(), it);
+      });
+}
+
+template <typename Char, typename OutputIt, typename UIntPtr>
+auto write_ptr(OutputIt out, UIntPtr value, const format_specs* specs)
+    -> OutputIt {
+  int num_digits = count_digits<4>(value);
+  auto size = to_unsigned(num_digits) + size_t(2);
+  auto write = [=](reserve_iterator<OutputIt> it) {
+    *it++ = static_cast<Char>('0');
+    *it++ = static_cast<Char>('x');
+    return format_base2e<Char>(4, it, value, num_digits);
+  };
+  return specs ? write_padded<Char, align::right>(out, *specs, size, write)
+               : base_iterator(out, write(reserve(out, size)));
+}
+
+// Returns true iff the code point cp is printable.
+FMT_API auto is_printable(uint32_t cp) -> bool;
+
+inline auto needs_escape(uint32_t cp) -> bool {
+  if (cp < 0x20 || cp == 0x7f || cp == '"' || cp == '\\') return true;
+  if FMT_CONSTEXPR20 (FMT_OPTIMIZE_SIZE > 1) return false;
+  return !is_printable(cp);
+}
+
+template <typename Char> struct find_escape_result {
+  const Char* begin;
+  const Char* end;
+  uint32_t cp;
+};
+
+template <typename Char>
+auto find_escape(const Char* begin, const Char* end)
+    -> find_escape_result<Char> {
+  for (; begin != end; ++begin) {
+    uint32_t cp = static_cast<unsigned_char<Char>>(*begin);
+    if (sizeof(Char) == 1 && cp >= 0x80) continue;
+    if (needs_escape(cp)) return {begin, begin + 1, cp};
+  }
+  return {begin, nullptr, 0};
+}
+
+inline auto find_escape(const char* begin, const char* end)
+    -> find_escape_result<char> {
+  if FMT_CONSTEXPR20 (!use_utf8) return find_escape<char>(begin, end);
+  auto result = find_escape_result<char>{end, nullptr, 0};
+  for_each_codepoint(string_view(begin, to_unsigned(end - begin)),
+                     [&](uint32_t cp, string_view sv) {
+                       if (needs_escape(cp)) {
+                         result = {sv.begin(), sv.end(), cp};
+                         return false;
+                       }
+                       return true;
+                     });
+  return result;
+}
+
+template <size_t width, typename Char, typename OutputIt>
+auto write_codepoint(OutputIt out, char prefix, uint32_t cp) -> OutputIt {
+  *out++ = static_cast<Char>('\\');
+  *out++ = static_cast<Char>(prefix);
+  Char buf[width];
+  fill_n(buf, width, static_cast<Char>('0'));
+  format_base2e(4, buf, cp, width);
+  return copy<Char>(buf, buf + width, out);
+}
+
+template <typename OutputIt, typename Char>
+auto write_escaped_cp(OutputIt out, const find_escape_result<Char>& escape)
+    -> OutputIt {
+  auto c = static_cast<Char>(escape.cp);
+  switch (escape.cp) {
+  case '\n':
+    *out++ = static_cast<Char>('\\');
+    c = static_cast<Char>('n');
+    break;
+  case '\r':
+    *out++ = static_cast<Char>('\\');
+    c = static_cast<Char>('r');
+    break;
+  case '\t':
+    *out++ = static_cast<Char>('\\');
+    c = static_cast<Char>('t');
+    break;
+  case '"':  FMT_FALLTHROUGH;
+  case '\'': FMT_FALLTHROUGH;
+  case '\\': *out++ = static_cast<Char>('\\'); break;
+  default:
+    if (escape.cp < 0x100) return write_codepoint<2, Char>(out, 'x', escape.cp);
+    if (escape.cp < 0x10000)
+      return write_codepoint<4, Char>(out, 'u', escape.cp);
+    if (escape.cp < 0x110000)
+      return write_codepoint<8, Char>(out, 'U', escape.cp);
+    for (Char escape_char : basic_string_view<Char>(
+             escape.begin, to_unsigned(escape.end - escape.begin))) {
+      out = write_codepoint<2, Char>(out, 'x',
+                                     static_cast<uint32_t>(escape_char) & 0xFF);
+    }
+    return out;
+  }
+  *out++ = c;
+  return out;
+}
+
+template <typename Char, typename OutputIt>
+auto write_escaped_string(OutputIt out, basic_string_view<Char> str)
+    -> OutputIt {
+  *out++ = static_cast<Char>('"');
+  auto begin = str.begin(), end = str.end();
+  do {
+    auto escape = find_escape(begin, end);
+    out = copy<Char>(begin, escape.begin, out);
+    begin = escape.end;
+    if (!begin) break;
+    out = write_escaped_cp<OutputIt, Char>(out, escape);
+  } while (begin != end);
+  *out++ = static_cast<Char>('"');
+  return out;
+}
+
+template <typename Char, typename OutputIt>
+auto write_escaped_char(OutputIt out, Char v) -> OutputIt {
+  Char v_array[1] = {v};
+  *out++ = static_cast<Char>('\'');
+  if ((needs_escape(static_cast<uint32_t>(v)) && v != static_cast<Char>('"')) ||
+      v == static_cast<Char>('\'')) {
+    out = write_escaped_cp(out,
+                           find_escape_result<Char>{v_array, v_array + 1,
+                                                    static_cast<uint32_t>(v)});
+  } else {
+    *out++ = v;
+  }
+  *out++ = static_cast<Char>('\'');
+  return out;
+}
+
+template <typename Char, typename OutputIt>
+FMT_CONSTEXPR auto write_char(OutputIt out, Char value,
+                              const format_specs& specs) -> OutputIt {
+  bool is_debug = specs.type() == presentation_type::debug;
+  Char buf[12];
+  auto* begin = buf;
+  auto* end = begin;
+  size_t size = 1;
+
+  if (is_debug) {
+    end = write_escaped_char(begin, value);
+    size = to_unsigned(end - begin);
+  }
+
+  return write_padded<Char>(out, specs, size,
+                            [=](reserve_iterator<OutputIt> it) {
+                              if (is_debug) return copy<Char>(begin, end, it);
+                              *it++ = value;
+                              return it;
+                            });
+}
+
+template <typename Char> class digit_grouping {
+ private:
+  std::string grouping_;
+  std::basic_string<Char> thousands_sep_;
+
+  struct next_state {
+    std::string::const_iterator group;
+    int pos;
+  };
+  auto initial_state() const -> next_state { return {grouping_.begin(), 0}; }
+
+  // Returns the next digit group separator position.
+  auto next(next_state& state) const -> int {
+    if (thousands_sep_.empty() || grouping_.empty()) return max_value<int>();
+    if (state.group == grouping_.end()) return state.pos += grouping_.back();
+    if (*state.group <= 0 || *state.group == max_value<char>())
+      return max_value<int>();
+    state.pos += *state.group++;
+    return state.pos;
+  }
+
+ public:
+  explicit digit_grouping(locale_ref loc, bool localized = true) {
+    if (!localized) return;
+    auto sep = thousands_sep<Char>(loc);
+    grouping_ = std::move(sep.grouping);
+    if (sep.thousands_sep) thousands_sep_.assign(1, sep.thousands_sep);
+  }
+  digit_grouping(std::string grouping, std::basic_string<Char> sep)
+      : grouping_(std::move(grouping)), thousands_sep_(std::move(sep)) {}
+
+  auto has_separator() const -> bool { return !thousands_sep_.empty(); }
+
+  auto count_separators(int num_digits) const -> int {
+    int count = 0;
+    auto state = initial_state();
+    while (num_digits > next(state)) ++count;
+    return count;
+  }
+
+  // Applies grouping to digits and writes the output to out.
+  template <typename Out, typename C>
+  auto apply(Out out, basic_string_view<C> digits) const -> Out {
+    auto num_digits = static_cast<int>(digits.size());
+    auto separators = basic_memory_buffer<int>();
+    separators.push_back(0);
+    auto state = initial_state();
+    while (int i = next(state)) {
+      if (i >= num_digits) break;
+      separators.push_back(i);
+    }
+    for (int i = 0, sep_index = static_cast<int>(separators.size() - 1);
+         i < num_digits; ++i) {
+      if (num_digits - i == separators[sep_index]) {
+        out = copy<Char>(thousands_sep_.data(),
+                         thousands_sep_.data() + thousands_sep_.size(), out);
+        --sep_index;
+      }
+      *out++ = static_cast<Char>(digits[to_unsigned(i)]);
+    }
+    return out;
+  }
+};
+
+FMT_CONSTEXPR inline void prefix_append(unsigned& prefix, unsigned value) {
+  prefix |= prefix != 0 ? value << 8 : value;
+  prefix += (1u + (value > 0xff ? 1 : 0)) << 24;
+}
+
+// Writes an integer as a character, treating chars as unsigned.
+template <typename Char, typename OutputIt, typename UInt>
+FMT_CONSTEXPR auto write_int_chr(OutputIt out, UInt abs_value, bool negative,
+                                 const format_specs& specs) -> OutputIt {
+  if (negative || abs_value > max_value<make_unsigned_t<Char>>())
+    report_error("character value out of range");
+  return write_char<Char>(out, static_cast<Char>(abs_value), specs);
+}
+
+// Size and padding computation separate from write_int to avoid template bloat.
+struct size_padding {
+  unsigned size;
+  unsigned padding;
+
+  FMT_CONSTEXPR size_padding(int num_digits, unsigned prefix,
+                             const format_specs& specs)
+      : size((prefix >> 24) + to_unsigned(num_digits)), padding(0) {
+    if (specs.align() == align::numeric) {
+      auto width = to_unsigned(specs.width);
+      if (width > size) {
+        padding = width - size;
+        size = width;
+      }
+    } else if (specs.precision > num_digits) {
+      size = (prefix >> 24) + to_unsigned(specs.precision);
+      padding = to_unsigned(specs.precision - num_digits);
+    }
+  }
+};
+
+// Writes a decimal integer with digit grouping.
+template <typename OutputIt, typename UInt, typename Char>
+auto write_int(OutputIt out, UInt value, unsigned prefix,
+               const format_specs& specs, const digit_grouping<Char>& grouping)
+    -> OutputIt {
+  static_assert(std::is_same<uint64_or_128_t<UInt>, UInt>::value, "");
+  int num_digits = 0;
+  auto buffer = memory_buffer();
+  switch (specs.type()) {
+  default: FMT_ASSERT(false, ""); FMT_FALLTHROUGH;
+  case presentation_type::none:
+  case presentation_type::dec:
+    num_digits = count_digits(value);
+    format_decimal<char>(appender(buffer), value, num_digits);
+    break;
+  case presentation_type::hex:
+    if (specs.alt())
+      prefix_append(prefix, unsigned(specs.upper() ? 'X' : 'x') << 8 | '0');
+    num_digits = count_digits<4>(value);
+    format_base2e<char>(4, appender(buffer), value, num_digits, specs.upper());
+    break;
+  case presentation_type::oct:
+    num_digits = count_digits<3>(value);
+    // Octal prefix '0' is counted as a digit, so only add it if precision
+    // is not greater than the number of digits.
+    if (specs.alt() && specs.precision <= num_digits && value != 0)
+      prefix_append(prefix, '0');
+    format_base2e<char>(3, appender(buffer), value, num_digits);
+    break;
+  case presentation_type::bin:
+    if (specs.alt())
+      prefix_append(prefix, unsigned(specs.upper() ? 'B' : 'b') << 8 | '0');
+    num_digits = count_digits<1>(value);
+    format_base2e<char>(1, appender(buffer), value, num_digits);
+    break;
+  case presentation_type::chr:
+    return write_int_chr<Char>(out, value, (prefix & 0xff) == '-', specs);
+  }
+
+  auto sp = size_padding(num_digits + grouping.count_separators(num_digits),
+                         prefix, specs);
+  return write_padded<Char, align::right>(
+      out, specs, sp.size, [&](reserve_iterator<OutputIt> it) {
+        for (unsigned p = prefix & 0xffffff; p != 0; p >>= 8)
+          *it++ = static_cast<Char>(p & 0xff);
+        it = detail::fill_n(it, sp.padding, static_cast<Char>('0'));
+        return grouping.apply(it, string_view(buffer.data(), buffer.size()));
+      });
+}
+
+#if FMT_USE_LOCALE
+// Writes a localized value.
+FMT_API auto write_loc(appender out, loc_value value, const format_specs& specs,
+                       locale_ref loc) -> bool;
+auto write_loc(basic_appender<wchar_t> out, loc_value value,
+               const format_specs& specs, locale_ref loc) -> bool;
+#endif
+template <typename OutputIt>
+inline auto write_loc(OutputIt, const loc_value&, const format_specs&,
+                      locale_ref) -> bool {
+  return false;
+}
+
+template <typename UInt> struct write_int_arg {
+  UInt abs_value;
+  unsigned prefix;
+};
+
+template <typename T>
+FMT_CONSTEXPR auto make_write_int_arg(T value, sign s)
+    -> write_int_arg<uint32_or_64_or_128_t<T>> {
+  auto prefix = 0u;
+  auto abs_value = static_cast<uint32_or_64_or_128_t<T>>(value);
+  if (is_negative(value)) {
+    prefix = 0x01000000 | '-';
+    abs_value = 0 - abs_value;
+  } else {
+    constexpr unsigned prefixes[4] = {0, 0, 0x1000000u | '+', 0x1000000u | ' '};
+    prefix = prefixes[static_cast<int>(s)];
+  }
+  return {abs_value, prefix};
+}
+
+template <typename Char = char> struct loc_writer {
+  basic_appender<Char> out;
+  const format_specs& specs;
+  std::basic_string<Char> sep;
+  std::string grouping;
+  std::basic_string<Char> decimal_point;
+
+  template <typename T, FMT_ENABLE_IF(is_integer<T>::value)>
+  auto operator()(T value) -> bool {
+    auto arg = make_write_int_arg(value, specs.sign());
+    write_int(out, static_cast<uint64_or_128_t<T>>(arg.abs_value), arg.prefix,
+              specs, digit_grouping<Char>(grouping, sep));
+    return true;
+  }
+
+  template <typename T, FMT_ENABLE_IF(!is_integer<T>::value)>
+  auto operator()(T) -> bool {
+    return false;
+  }
+};
+
+template <typename Char, typename OutputIt, typename T>
+FMT_CONSTEXPR FMT_INLINE auto write_int(OutputIt out, write_int_arg<T> arg,
+                                        const format_specs& specs) -> OutputIt {
+  static_assert(std::is_same<T, uint32_or_64_or_128_t<T>>::value, "");
+
+  constexpr size_t buffer_size = num_bits<T>();
+  char buffer[buffer_size];
+  if (is_constant_evaluated()) fill_n(buffer, buffer_size, '\0');
+  const char* begin = nullptr;
+  const char* end = buffer + buffer_size;
+
+  auto abs_value = arg.abs_value;
+  auto prefix = arg.prefix;
+  switch (specs.type()) {
+  default: FMT_ASSERT(false, ""); FMT_FALLTHROUGH;
+  case presentation_type::none:
+  case presentation_type::dec:
+    begin = do_format_decimal(buffer, abs_value, buffer_size);
+    break;
+  case presentation_type::hex:
+    begin = do_format_base2e(4, buffer, abs_value, buffer_size, specs.upper());
+    if (specs.alt())
+      prefix_append(prefix, unsigned(specs.upper() ? 'X' : 'x') << 8 | '0');
+    break;
+  case presentation_type::oct: {
+    begin = do_format_base2e(3, buffer, abs_value, buffer_size);
+    // Octal prefix '0' is counted as a digit, so only add it if precision
+    // is not greater than the number of digits.
+    auto num_digits = end - begin;
+    if (specs.alt() && specs.precision <= num_digits && abs_value != 0)
+      prefix_append(prefix, '0');
+    break;
+  }
+  case presentation_type::bin:
+    begin = do_format_base2e(1, buffer, abs_value, buffer_size);
+    if (specs.alt())
+      prefix_append(prefix, unsigned(specs.upper() ? 'B' : 'b') << 8 | '0');
+    break;
+  case presentation_type::chr:
+    return write_int_chr<Char>(out, abs_value, (prefix & 0xff) == '-', specs);
+  }
+
+  // Write an integer in the format
+  //   <left-padding><prefix><numeric-padding><digits><right-padding>
+  // prefix contains chars in three lower bytes and the size in the fourth byte.
+  int num_digits = static_cast<int>(end - begin);
+  // Slightly faster check for specs.width == 0 && specs.precision == -1.
+  if ((specs.width | (specs.precision + 1)) == 0) {
+    auto it = reserve(out, to_unsigned(num_digits) + (prefix >> 24));
+    for (unsigned p = prefix & 0xffffff; p != 0; p >>= 8)
+      *it++ = static_cast<Char>(p & 0xff);
+    return base_iterator(out, copy<Char>(begin, end, it));
+  }
+  auto sp = size_padding(num_digits, prefix, specs);
+  unsigned padding = sp.padding;
+  return write_padded<Char, align::right>(
+      out, specs, sp.size, [=](reserve_iterator<OutputIt> it) {
+        for (unsigned p = prefix & 0xffffff; p != 0; p >>= 8)
+          *it++ = static_cast<Char>(p & 0xff);
+        it = detail::fill_n(it, padding, static_cast<Char>('0'));
+        return copy<Char>(begin, end, it);
+      });
+}
+
+template <typename Char, typename OutputIt, typename T>
+FMT_CONSTEXPR FMT_NOINLINE auto write_int_noinline(OutputIt out,
+                                                   write_int_arg<T> arg,
+                                                   const format_specs& specs)
+    -> OutputIt {
+  return write_int<Char>(out, arg, specs);
+}
+
+template <typename Char, typename OutputIt, typename T,
+          FMT_ENABLE_IF(is_integral<T>::value &&
+                        !std::is_same<T, bool>::value &&
+                        !std::is_same<T, Char>::value)>
+FMT_CONSTEXPR FMT_INLINE auto write(OutputIt out, T value,
+                                    const format_specs& specs, locale_ref loc)
+    -> OutputIt {
+  if (specs.localized() && write_loc(out, value, specs, loc)) return out;
+  auto arg = make_write_int_arg(value, specs.sign());
+  // Out of line for appenders to avoid bloat; inlined for compiled formatting.
+  if FMT_CONSTEXPR20 (std::is_same<OutputIt, basic_appender<Char>>::value)
+    return write_int_noinline<Char>(out, arg, specs);
+  return write_int<Char>(out, arg, specs);
+}
+
+template <typename Char, typename OutputIt>
+FMT_CONSTEXPR auto write(OutputIt out, Char value, const format_specs& specs,
+                         locale_ref loc = {}) -> OutputIt {
+  // char is formatted as unsigned char for consistency across platforms.
+  using unsigned_type =
+      conditional_t<std::is_same<Char, char>::value, unsigned char, unsigned>;
+  return check_char_specs(specs)
+             ? write_char<Char>(out, value, specs)
+             : write<Char>(out, static_cast<unsigned_type>(value), specs, loc);
+}
+
+template <typename Char, typename OutputIt,
+          FMT_ENABLE_IF(std::is_same<Char, char>::value)>
+FMT_CONSTEXPR auto write(OutputIt out, basic_string_view<Char> s,
+                         const format_specs& specs) -> OutputIt {
+  bool is_debug = specs.type() == presentation_type::debug;
+  if (specs.precision < 0 && specs.width == 0) {
+    auto&& it = reserve(out, s.size());
+    return is_debug ? write_escaped_string(it, s) : copy<char>(s, it);
+  }
+
+  size_t display_width_limit =
+      specs.precision < 0 ? SIZE_MAX : to_unsigned(specs.precision);
+  size_t display_width =
+      !is_debug || specs.precision == 0 ? 0 : 1;  // Account for opening '"'.
+  size_t size = !is_debug || specs.precision == 0 ? 0 : 1;
+  for_each_codepoint(s, [&](uint32_t cp, string_view sv) {
+    if (is_debug && needs_escape(cp)) {
+      counting_buffer<char> buf;
+      write_escaped_cp(basic_appender<char>(buf),
+                       find_escape_result<char>{sv.begin(), sv.end(), cp});
+      // We're reinterpreting bytes as display width. That's okay
+      // because write_escaped_cp() only writes ASCII characters.
+      size_t cp_width = buf.count();
+      if (display_width + cp_width <= display_width_limit) {
+        display_width += cp_width;
+        size += cp_width;
+        // If this is the end of the string, account for closing '"'.
+        if (display_width < display_width_limit && sv.end() == s.end()) {
+          ++display_width;
+          ++size;
+        }
+        return true;
+      }
+
+      size += display_width_limit - display_width;
+      display_width = display_width_limit;
+      return false;
+    }
+
+    size_t cp_width = display_width_of(cp);
+    if (cp_width + display_width <= display_width_limit) {
+      display_width += cp_width;
+      size += sv.size();
+      // If this is the end of the string, account for closing '"'.
+      if (is_debug && display_width < display_width_limit &&
+          sv.end() == s.end()) {
+        ++display_width;
+        ++size;
+      }
+      return true;
+    }
+
+    return false;
+  });
+
+  if (is_debug && s.size() == 0 && specs.precision != 0 &&
+      display_width < display_width_limit) {
+    ++display_width;
+    ++size;
+  }
+
+  struct bounded_output_iterator {
+    reserve_iterator<OutputIt> underlying_iterator;
+    size_t bound;
+
+    FMT_CONSTEXPR auto operator*() -> bounded_output_iterator& { return *this; }
+    FMT_CONSTEXPR auto operator++() -> bounded_output_iterator& {
+      return *this;
+    }
+    FMT_CONSTEXPR auto operator++(int) -> bounded_output_iterator& {
+      return *this;
+    }
+    FMT_CONSTEXPR auto operator=(char c) -> bounded_output_iterator& {
+      if (bound > 0) {
+        *underlying_iterator++ = c;
+        --bound;
+      }
+      return *this;
+    }
+  };
+
+  return write_padded<char>(
+      out, specs, size, display_width, [=](reserve_iterator<OutputIt> it) {
+        return is_debug
+                   ? write_escaped_string(bounded_output_iterator{it, size}, s)
+                         .underlying_iterator
+                   : copy<char>(s.data(), s.data() + size, it);
+      });
+}
+
+template <typename Char, typename OutputIt,
+          FMT_ENABLE_IF(!std::is_same<Char, char>::value)>
+FMT_CONSTEXPR auto write(OutputIt out, basic_string_view<Char> s,
+                         const format_specs& specs) -> OutputIt {
+  auto data = s.data();
+  auto size = s.size();
+  if (specs.precision >= 0 && to_unsigned(specs.precision) < size)
+    size = to_unsigned(specs.precision);
+
+  bool is_debug = specs.type() == presentation_type::debug;
+  if (is_debug) {
+    auto buf = counting_buffer<Char>();
+    write_escaped_string(basic_appender<Char>(buf), s);
+    size = buf.count();
+  }
+
+  return write_padded<Char>(
+      out, specs, size, [=](reserve_iterator<OutputIt> it) {
+        return is_debug ? write_escaped_string(it, s)
+                        : copy<Char>(data, data + size, it);
+      });
+}
+
+template <typename Char, typename OutputIt>
+FMT_CONSTEXPR auto write(OutputIt out, basic_string_view<Char> s,
+                         const format_specs& specs, locale_ref) -> OutputIt {
+  return write<Char>(out, s, specs);
+}
+
+template <typename Char, typename OutputIt>
+FMT_CONSTEXPR auto write(OutputIt out, const Char* s, const format_specs& specs,
+                         locale_ref) -> OutputIt {
+  if (specs.type() == presentation_type::pointer)
+    return write_ptr<Char>(out, bit_cast<uintptr_t>(s), &specs);
+  if (!s) report_error("string pointer is null");
+  return write<Char>(out, basic_string_view<Char>(s), specs, {});
+}
+
+template <typename Char, typename OutputIt, typename T,
+          FMT_ENABLE_IF(is_integral<T>::value &&
+                        !std::is_same<T, bool>::value &&
+                        !std::is_same<T, Char>::value)>
+FMT_CONSTEXPR auto write(OutputIt out, T value) -> OutputIt {
+  auto abs_value = static_cast<uint32_or_64_or_128_t<T>>(value);
+  bool negative = is_negative(value);
+  // Don't do -abs_value since it trips unsigned-integer-overflow sanitizer.
+  if (negative) abs_value = ~abs_value + 1;
+  int num_digits = count_digits(abs_value);
+  auto size = (negative ? 1 : 0) + static_cast<size_t>(num_digits);
+  if (auto ptr = to_pointer<Char>(out, size)) {
+    if (negative) *ptr++ = static_cast<Char>('-');
+    format_decimal<Char>(ptr, abs_value, num_digits);
+    return out;
+  }
+  if (negative) *out++ = static_cast<Char>('-');
+  return format_decimal<Char>(out, abs_value, num_digits);
+}
+
+template <typename Char>
+FMT_CONSTEXPR auto parse_align(const Char* begin, const Char* end,
+                               format_specs& specs) -> const Char* {
+  FMT_ASSERT(begin != end, "");
+  auto alignment = align::none;
+  auto p = begin + code_point_length(begin);
+  if (end - p <= 0) p = begin;
+  for (;;) {
+    switch (to_ascii(*p)) {
+    case '<': alignment = align::left; break;
+    case '>': alignment = align::right; break;
+    case '^': alignment = align::center; break;
+    }
+    if (alignment != align::none) {
+      if (p != begin) {
+        auto c = *begin;
+        if (c == '}') return begin;
+        if (c == '{') {
+          report_error("invalid fill character '{'");
+          return begin;
+        }
+        specs.set_fill(basic_string_view<Char>(begin, to_unsigned(p - begin)));
+        begin = p + 1;
+      } else {
+        ++begin;
+      }
+      break;
+    }
+    if (p == begin) break;
+    p = begin;
+  }
+  specs.set_align(alignment);
+  return begin;
+}
+
+template <typename Char, typename OutputIt>
+FMT_CONSTEXPR20 auto write_nonfinite(OutputIt out, bool isnan,
+                                     format_specs specs, sign s) -> OutputIt {
+  auto str =
+      isnan ? (specs.upper() ? "NAN" : "nan") : (specs.upper() ? "INF" : "inf");
+  constexpr size_t str_size = 3;
+  auto size = str_size + (s != sign::none ? 1 : 0);
+  // Replace '0'-padding with space for non-finite values.
+  const bool is_zero_fill =
+      specs.fill_size() == 1 && specs.fill_unit<Char>() == '0';
+  if (is_zero_fill) specs.set_fill(' ');
+  return write_padded<Char, align::right>(
+      out, specs, size, [=](reserve_iterator<OutputIt> it) {
+        if (s != sign::none) *it++ = detail::getsign<Char>(s);
+        return copy<Char>(str, str + str_size, it);
+      });
+}
+
+// A decimal floating-point number significand * pow(10, exp).
+struct big_decimal_fp {
+  const char* significand;
+  int significand_size;
+  int exponent;
+};
+
+constexpr auto get_significand_size(const big_decimal_fp& f) -> int {
+  return f.significand_size;
+}
+template <typename T>
+inline auto get_significand_size(const decimal_fp<T>& f) -> int {
+  return count_digits(f.significand);
+}
+
+template <typename Char, typename OutputIt>
+constexpr auto write_significand(OutputIt out, const char* significand,
+                                 int significand_size) -> OutputIt {
+  return copy<Char>(significand, significand + significand_size, out);
+}
+template <typename Char, typename OutputIt, typename UInt>
+inline auto write_significand(OutputIt out, UInt significand,
+                              int significand_size) -> OutputIt {
+  return format_decimal<Char>(out, significand, significand_size);
+}
+template <typename Char, typename OutputIt, typename T, typename Grouping>
+FMT_CONSTEXPR20 auto write_significand(OutputIt out, T significand,
+                                       int significand_size, int exponent,
+                                       const Grouping& grouping) -> OutputIt {
+  if (!grouping.has_separator()) {
+    out = write_significand<Char>(out, significand, significand_size);
+    return detail::fill_n(out, exponent, static_cast<Char>('0'));
+  }
+  auto buffer = memory_buffer();
+  write_significand<char>(appender(buffer), significand, significand_size);
+  detail::fill_n(appender(buffer), exponent, '0');
+  return grouping.apply(out, string_view(buffer.data(), buffer.size()));
+}
+
+template <typename Char, typename UInt,
+          FMT_ENABLE_IF(std::is_integral<UInt>::value)>
+inline auto write_significand(Char* out, UInt significand, int significand_size,
+                              int integral_size, Char decimal_point) -> Char* {
+  if (!decimal_point) return format_decimal(out, significand, significand_size);
+  out += significand_size + 1;
+  Char* end = out;
+  int floating_size = significand_size - integral_size;
+  for (int i = floating_size / 2; i > 0; --i) {
+    out -= 2;
+    write2digits(out, static_cast<size_t>(significand % 100));
+    significand /= 100;
+  }
+  if (floating_size % 2 != 0) {
+    *--out = static_cast<Char>('0' + significand % 10);
+    significand /= 10;
+  }
+  *--out = decimal_point;
+  format_decimal(out - integral_size, significand, integral_size);
+  return end;
+}
+
+template <typename OutputIt, typename UInt, typename Char,
+          FMT_ENABLE_IF(!std::is_pointer<remove_cvref_t<OutputIt>>::value)>
+inline auto write_significand(OutputIt out, UInt significand,
+                              int significand_size, int integral_size,
+                              Char decimal_point) -> OutputIt {
+  // Buffer is large enough to hold digits (digits10 + 1) and a decimal point.
+  Char buffer[digits10<UInt>() + 2];
+  auto end = write_significand(buffer, significand, significand_size,
+                               integral_size, decimal_point);
+  return detail::copy_noinline<Char>(buffer, end, out);
+}
+
+template <typename OutputIt, typename Char>
+FMT_CONSTEXPR auto write_significand(OutputIt out, const char* significand,
+                                     int significand_size, int integral_size,
+                                     Char decimal_point) -> OutputIt {
+  out = detail::copy_noinline<Char>(significand, significand + integral_size,
+                                    out);
+  if (!decimal_point) return out;
+  *out++ = decimal_point;
+  return detail::copy_noinline<Char>(significand + integral_size,
+                                     significand + significand_size, out);
+}
+
+template <typename OutputIt, typename Char, typename T, typename Grouping>
+FMT_CONSTEXPR20 auto write_significand(OutputIt out, T significand,
+                                       int significand_size, int integral_size,
+                                       Char decimal_point,
+                                       const Grouping& grouping) -> OutputIt {
+  if (!grouping.has_separator()) {
+    return write_significand(out, significand, significand_size, integral_size,
+                             decimal_point);
+  }
+  auto buffer = basic_memory_buffer<Char>();
+  write_significand(basic_appender<Char>(buffer), significand, significand_size,
+                    integral_size, decimal_point);
+  grouping.apply(
+      out, basic_string_view<Char>(buffer.data(), to_unsigned(integral_size)));
+  return detail::copy_noinline<Char>(buffer.data() + integral_size,
+                                     buffer.end(), out);
+}
+
+// Numbers with exponents greater or equal to the returned value will use
+// the exponential notation.
+template <typename T> FMT_CONSTEVAL auto exp_upper() -> int {
+  return std::numeric_limits<T>::digits10 != 0
+             ? min_of(16, std::numeric_limits<T>::digits10 + 1)
+             : 16;
+}
+
+// Use the fixed notation if the exponent is in [-4, exp_upper),
+// e.g. 0.0001 instead of 1e-04. Otherwise use the exponent notation.
+constexpr auto use_fixed(int exp, int exp_upper) -> bool {
+  return exp >= -4 && exp < exp_upper;
+}
+
+template <typename Char> class fallback_digit_grouping {
+ public:
+  constexpr fallback_digit_grouping(locale_ref, bool) {}
+
+  constexpr auto has_separator() const -> bool { return false; }
+
+  constexpr auto count_separators(int) const -> int { return 0; }
+
+  template <typename Out, typename C>
+  constexpr auto apply(Out out, basic_string_view<C>) const -> Out {
+    return out;
+  }
+};
+
+template <typename Char, typename Grouping, typename OutputIt,
+          typename DecimalFP>
+FMT_CONSTEXPR20 auto write_fixed(OutputIt out, const DecimalFP& f,
+                                 int significand_size, Char decimal_point,
+                                 const format_specs& specs, sign s,
+                                 locale_ref loc = {}) -> OutputIt {
+  using iterator = reserve_iterator<OutputIt>;
+
+  const bool fixed = specs.type() == presentation_type::fixed;
+  int exp = f.exponent + significand_size;
+  long long size = significand_size + (s != sign::none ? 1 : 0);
+  if (f.exponent >= 0) {
+    // 1234e5 -> 123400000[.0+]
+    size += f.exponent;
+    int num_zeros = fixed ? specs.precision : specs.precision - exp;
+    abort_fuzzing_if(num_zeros > 5000);
+    if (specs.alt()) size += 1 + max_of(num_zeros, 0);
+    auto grouping = Grouping(loc, specs.localized());
+    size += grouping.count_separators(exp);
+    return write_padded<Char, align::right>(
+        out, specs, static_cast<size_t>(size), [&](iterator it) {
+          if (s != sign::none) *it++ = detail::getsign<Char>(s);
+          it = write_significand<Char>(it, f.significand, significand_size,
+                                       f.exponent, grouping);
+          if (!specs.alt()) return it;
+          *it++ = decimal_point;
+          return num_zeros > 0 ? detail::fill_n(it, num_zeros, Char('0')) : it;
+        });
+  }
+  int num_digits = fixed ? -f.exponent : significand_size;
+  int trailing_zeros =
+      fixed || specs.alt() ? max_of(specs.precision - num_digits, 0) : 0;
+  if (exp > 0) {
+    // 1234e-2 -> 12.34[0+]
+    size += 1 + trailing_zeros;
+    auto grouping = Grouping(loc, specs.localized());
+    size += grouping.count_separators(exp);
+    return write_padded<Char, align::right>(
+        out, specs, static_cast<size_t>(size), [&](iterator it) {
+          if (s != sign::none) *it++ = detail::getsign<Char>(s);
+          it = write_significand(it, f.significand, significand_size, exp,
+                                 decimal_point, grouping);
+          return detail::fill_n(it, trailing_zeros, Char('0'));
+        });
+  }
+  // 1234e-6 -> 0.001234
+  int num_zeros = -exp;
+  if (significand_size == 0 && specs.precision >= 0 &&
+      specs.precision < num_zeros) {
+    num_zeros = specs.precision;
+  }
+  bool pointy = num_zeros != 0 || significand_size != 0 || specs.alt();
+  size += 1 + (pointy ? 1 : 0) + num_zeros + trailing_zeros;
+  return write_padded<Char, align::right>(
+      out, specs, static_cast<size_t>(size), [&](iterator it) {
+        if (s != sign::none) *it++ = detail::getsign<Char>(s);
+        *it++ = Char('0');
+        if (!pointy) return it;
+        *it++ = decimal_point;
+        it = detail::fill_n(it, num_zeros, Char('0'));
+        it = write_significand<Char>(it, f.significand, significand_size);
+        return detail::fill_n(it, trailing_zeros, Char('0'));
+      });
+}
+
+template <typename Char, typename Grouping, typename OutputIt,
+          typename DecimalFP>
+FMT_CONSTEXPR20 auto do_write_float(OutputIt out, const DecimalFP& f,
+                                    const format_specs& specs, sign s,
+                                    int exp_upper, locale_ref loc) -> OutputIt {
+  bool localized = FMT_USE_LOCALE && specs.localized();
+  Char point = localized ? detail::decimal_point<Char>(loc) : Char('.');
+  int significand_size = get_significand_size(f);
+  int exp = f.exponent + significand_size - 1;
+  if (specs.type() == presentation_type::fixed ||
+      (specs.type() != presentation_type::exp &&
+       use_fixed(exp, specs.precision > 0 ? specs.precision : exp_upper))) {
+    return write_fixed<Char, Grouping>(out, f, significand_size, point, specs,
+                                       s, loc);
+  }
+
+  // Write value in the exponential format.
+  int num_zeros = 0;
+  long long size = significand_size + (s != sign::none ? 1 : 0);
+  if (specs.alt()) {
+    num_zeros = max_of(specs.precision - significand_size, 0);
+    size += num_zeros;
+  } else if (significand_size == 1) {
+    point = Char();
+  }
+  size += (point ? 1 : 0) + compute_exp_size(exp);
+  char exp_char = specs.upper() ? 'E' : 'e';
+  auto write = [=](reserve_iterator<OutputIt> it) {
+    if (s != sign::none) *it++ = detail::getsign<Char>(s);
+    // Insert a decimal point after the first digit and add an exponent.
+    it = write_significand(it, f.significand, significand_size, 1, point);
+    if (num_zeros > 0) it = detail::fill_n(it, num_zeros, Char('0'));
+    *it++ = Char(exp_char);
+    return write_exponent<Char>(exp, it);
+  };
+  size_t usize = static_cast<size_t>(size);
+  return specs.width > 0
+             ? write_padded<Char, align::right>(out, specs, usize, write)
+             : base_iterator(out, write(reserve(out, usize)));
+}
+
+template <typename Char, typename OutputIt, typename DecimalFP>
+FMT_CONSTEXPR20 auto write_float(OutputIt out, const DecimalFP& f,
+                                 const format_specs& specs, sign s,
+                                 int exp_upper, locale_ref loc) -> OutputIt {
+  if (is_constant_evaluated() || !FMT_USE_LOCALE) {
+    return do_write_float<Char, fallback_digit_grouping<Char>>(out, f, specs, s,
+                                                               exp_upper, loc);
+  } else {
+    return do_write_float<Char, digit_grouping<Char>>(out, f, specs, s,
+                                                      exp_upper, loc);
+  }
+}
+
+template <typename T> constexpr auto isnan(T value) -> bool {
+  return value != value;  // std::isnan doesn't support __float128.
+}
+
+template <typename T, typename Enable = void>
+struct has_isfinite : std::false_type {};
+
+template <typename T>
+struct has_isfinite<T, enable_if_t<sizeof(std::isfinite(T())) != 0>>
+    : std::true_type {};
+
+template <typename T,
+          FMT_ENABLE_IF(is_floating_point<T>::value&& has_isfinite<T>::value)>
+FMT_CONSTEXPR20 auto isfinite(T value) -> bool {
+  constexpr T inf = T(std::numeric_limits<double>::infinity());
+  if (is_constant_evaluated())
+    return !detail::isnan(value) && value < inf && value > -inf;
+  return std::isfinite(value);
+}
+template <typename T, FMT_ENABLE_IF(!has_isfinite<T>::value)>
+FMT_CONSTEXPR auto isfinite(T value) -> bool {
+  T inf = T(std::numeric_limits<double>::infinity());
+  // std::isfinite doesn't support __float128.
+  return !detail::isnan(value) && value < inf && value > -inf;
+}
+
+template <typename T, FMT_ENABLE_IF(is_floating_point<T>::value)>
+FMT_INLINE FMT_CONSTEXPR auto signbit(T value) -> bool {
+  if (is_constant_evaluated()) {
+#ifdef __cpp_if_constexpr
+    if constexpr (std::numeric_limits<double>::is_iec559) {
+      auto bits = detail::bit_cast<uint64_t>(static_cast<double>(value));
+      return (bits >> (num_bits<uint64_t>() - 1)) != 0;
+    }
+#endif
+  }
+  return std::signbit(static_cast<double>(value));
+}
+
+inline FMT_CONSTEXPR20 void adjust_precision(int& precision, int exp10) {
+  // Adjust fixed precision by exponent because it is relative to decimal
+  // point.
+  if (exp10 > 0 && precision > max_value<int>() - exp10)
+    FMT_THROW(format_error("number is too big"));
+  precision += exp10;
+}
+
+class bigint {
+ private:
+  // A bigint is a number in the form bigit_[N - 1] ... bigit_[0] * 32^exp_.
+  using bigit = uint32_t;  // A big digit.
+  using double_bigit = uint64_t;
+  enum { bigit_bits = num_bits<bigit>() };
+  enum { bigits_capacity = 32 };
+  basic_memory_buffer<bigit, bigits_capacity> bigits_;
+  int exp_;
+
+  friend struct formatter<bigint>;
+
+  FMT_CONSTEXPR auto get_bigit(int i) const -> bigit {
+    return i >= exp_ && i < num_bigits() ? bigits_[i - exp_] : 0;
+  }
+
+  FMT_CONSTEXPR void subtract_bigits(int index, bigit other, bigit& borrow) {
+    auto result = double_bigit(bigits_[index]) - other - borrow;
+    bigits_[index] = static_cast<bigit>(result);
+    borrow = static_cast<bigit>(result >> (bigit_bits * 2 - 1));
+  }
+
+  FMT_CONSTEXPR void remove_leading_zeros() {
+    int num_bigits = static_cast<int>(bigits_.size()) - 1;
+    while (num_bigits > 0 && bigits_[num_bigits] == 0) --num_bigits;
+    bigits_.resize(to_unsigned(num_bigits + 1));
+  }
+
+  // Computes *this -= other assuming aligned bigints and *this >= other.
+  FMT_CONSTEXPR void subtract_aligned(const bigint& other) {
+    FMT_ASSERT(other.exp_ >= exp_, "unaligned bigints");
+    FMT_ASSERT(compare(*this, other) >= 0, "");
+    bigit borrow = 0;
+    int i = other.exp_ - exp_;
+    for (size_t j = 0, n = other.bigits_.size(); j != n; ++i, ++j)
+      subtract_bigits(i, other.bigits_[j], borrow);
+    if (borrow != 0) subtract_bigits(i, 0, borrow);
+    FMT_ASSERT(borrow == 0, "");
+    remove_leading_zeros();
+  }
+
+  FMT_CONSTEXPR void multiply(uint32_t value) {
+    bigit carry = 0;
+    const double_bigit wide_value = value;
+    for (size_t i = 0, n = bigits_.size(); i < n; ++i) {
+      double_bigit result = bigits_[i] * wide_value + carry;
+      bigits_[i] = static_cast<bigit>(result);
+      carry = static_cast<bigit>(result >> bigit_bits);
+    }
+    if (carry != 0) bigits_.push_back(carry);
+  }
+
+  template <typename UInt, FMT_ENABLE_IF(std::is_same<UInt, uint64_t>::value ||
+                                         std::is_same<UInt, uint128_t>::value)>
+  FMT_CONSTEXPR void multiply(UInt value) {
+    using half_uint =
+        conditional_t<std::is_same<UInt, uint128_t>::value, uint64_t, uint32_t>;
+    const int shift = num_bits<half_uint>() - bigit_bits;
+    const UInt lower = static_cast<half_uint>(value);
+    const UInt upper = value >> num_bits<half_uint>();
+    UInt carry = 0;
+    for (size_t i = 0, n = bigits_.size(); i < n; ++i) {
+      UInt result = lower * bigits_[i] + static_cast<bigit>(carry);
+      carry = (upper * bigits_[i] << shift) + (result >> bigit_bits) +
+              (carry >> bigit_bits);
+      bigits_[i] = static_cast<bigit>(result);
+    }
+    while (carry != 0) {
+      bigits_.push_back(static_cast<bigit>(carry));
+      carry >>= bigit_bits;
+    }
+  }
+
+  template <typename UInt, FMT_ENABLE_IF(std::is_same<UInt, uint64_t>::value ||
+                                         std::is_same<UInt, uint128_t>::value)>
+  FMT_CONSTEXPR void assign(UInt n) {
+    size_t num_bigits = 0;
+    do {
+      bigits_[num_bigits++] = static_cast<bigit>(n);
+      n >>= bigit_bits;
+    } while (n != 0);
+    bigits_.resize(num_bigits);
+    exp_ = 0;
+  }
+
+ public:
+  FMT_CONSTEXPR bigint() : exp_(0) {}
+  explicit bigint(uint64_t n) { assign(n); }
+
+  bigint(const bigint&) = delete;
+  void operator=(const bigint&) = delete;
+
+  FMT_CONSTEXPR void assign(const bigint& other) {
+    auto size = other.bigits_.size();
+    bigits_.resize(size);
+    auto data = other.bigits_.data();
+    copy<bigit>(data, data + size, bigits_.data());
+    exp_ = other.exp_;
+  }
+
+  template <typename Int> FMT_CONSTEXPR void operator=(Int n) {
+    FMT_ASSERT(n > 0, "");
+    assign(uint64_or_128_t<Int>(n));
+  }
+
+  FMT_CONSTEXPR auto num_bigits() const -> int {
+    return static_cast<int>(bigits_.size()) + exp_;
+  }
+
+  FMT_CONSTEXPR auto operator<<=(int shift) -> bigint& {
+    FMT_ASSERT(shift >= 0, "");
+    exp_ += shift / bigit_bits;
+    shift %= bigit_bits;
+    if (shift == 0) return *this;
+    bigit carry = 0;
+    for (size_t i = 0, n = bigits_.size(); i < n; ++i) {
+      bigit c = bigits_[i] >> (bigit_bits - shift);
+      bigits_[i] = (bigits_[i] << shift) + carry;
+      carry = c;
+    }
+    if (carry != 0) bigits_.push_back(carry);
+    return *this;
+  }
+
+  template <typename Int> FMT_CONSTEXPR auto operator*=(Int value) -> bigint& {
+    FMT_ASSERT(value > 0, "");
+    multiply(uint32_or_64_or_128_t<Int>(value));
+    return *this;
+  }
+
+  friend FMT_CONSTEXPR auto compare(const bigint& b1, const bigint& b2) -> int {
+    int num_bigits1 = b1.num_bigits(), num_bigits2 = b2.num_bigits();
+    if (num_bigits1 != num_bigits2) return num_bigits1 > num_bigits2 ? 1 : -1;
+    int i = static_cast<int>(b1.bigits_.size()) - 1;
+    int j = static_cast<int>(b2.bigits_.size()) - 1;
+    int end = i - j;
+    if (end < 0) end = 0;
+    for (; i >= end; --i, --j) {
+      bigit b1_bigit = b1.bigits_[i], b2_bigit = b2.bigits_[j];
+      if (b1_bigit != b2_bigit) return b1_bigit > b2_bigit ? 1 : -1;
+    }
+    if (i != j) return i > j ? 1 : -1;
+    return 0;
+  }
+
+  // Returns compare(lhs1 + lhs2, rhs).
+  friend FMT_CONSTEXPR auto add_compare(const bigint& lhs1, const bigint& lhs2,
+                                        const bigint& rhs) -> int {
+    int max_lhs_bigits = max_of(lhs1.num_bigits(), lhs2.num_bigits());
+    int num_rhs_bigits = rhs.num_bigits();
+    if (max_lhs_bigits + 1 < num_rhs_bigits) return -1;
+    if (max_lhs_bigits > num_rhs_bigits) return 1;
+    double_bigit borrow = 0;
+    int min_exp = min_of(min_of(lhs1.exp_, lhs2.exp_), rhs.exp_);
+    for (int i = num_rhs_bigits - 1; i >= min_exp; --i) {
+      double_bigit sum = double_bigit(lhs1.get_bigit(i)) + lhs2.get_bigit(i);
+      bigit rhs_bigit = rhs.get_bigit(i);
+      if (sum > rhs_bigit + borrow) return 1;
+      borrow = rhs_bigit + borrow - sum;
+      if (borrow > 1) return -1;
+      borrow <<= bigit_bits;
+    }
+    return borrow != 0 ? -1 : 0;
+  }
+
+  // Assigns pow(10, exp) to this bigint.
+  FMT_CONSTEXPR20 void assign_pow10(int exp) {
+    FMT_ASSERT(exp >= 0, "");
+    if (exp == 0) return *this = 1;
+    int bitmask = 1 << (num_bits<unsigned>() -
+                        countl_zero(static_cast<uint32_t>(exp)) - 1);
+    // pow(10, exp) = pow(5, exp) * pow(2, exp). First compute pow(5, exp) by
+    // repeated squaring and multiplication.
+    *this = 5;
+    bitmask >>= 1;
+    while (bitmask != 0) {
+      square();
+      if ((exp & bitmask) != 0) *this *= 5;
+      bitmask >>= 1;
+    }
+    *this <<= exp;  // Multiply by pow(2, exp) by shifting.
+  }
+
+  FMT_CONSTEXPR20 void square() {
+    int num_bigits = static_cast<int>(bigits_.size());
+    int num_result_bigits = 2 * num_bigits;
+    basic_memory_buffer<bigit, bigits_capacity> n(std::move(bigits_));
+    bigits_.resize(to_unsigned(num_result_bigits));
+    auto sum = uint128_t();
+    for (int bigit_index = 0; bigit_index < num_bigits; ++bigit_index) {
+      // Compute bigit at position bigit_index of the result by adding
+      // cross-product terms n[i] * n[j] such that i + j == bigit_index.
+      for (int i = 0, j = bigit_index; j >= 0; ++i, --j) {
+        // Most terms are multiplied twice which can be optimized in the future.
+        sum += double_bigit(n[i]) * n[j];
+      }
+      bigits_[bigit_index] = static_cast<bigit>(sum);
+      sum >>= num_bits<bigit>();  // Compute the carry.
+    }
+    // Do the same for the top half.
+    for (int bigit_index = num_bigits; bigit_index < num_result_bigits;
+         ++bigit_index) {
+      for (int j = num_bigits - 1, i = bigit_index - j; i < num_bigits;)
+        sum += double_bigit(n[i++]) * n[j--];
+      bigits_[bigit_index] = static_cast<bigit>(sum);
+      sum >>= num_bits<bigit>();
+    }
+    remove_leading_zeros();
+    exp_ *= 2;
+  }
+
+  // If this bigint has a bigger exponent than other, adds trailing zero to make
+  // exponents equal. This simplifies some operations such as subtraction.
+  FMT_CONSTEXPR void align(const bigint& other) {
+    int exp_difference = exp_ - other.exp_;
+    if (exp_difference <= 0) return;
+    int num_bigits = static_cast<int>(bigits_.size());
+    bigits_.resize(to_unsigned(num_bigits + exp_difference));
+    for (int i = num_bigits - 1, j = i + exp_difference; i >= 0; --i, --j)
+      bigits_[j] = bigits_[i];
+    fill_n(bigits_.data(), to_unsigned(exp_difference), 0U);
+    exp_ -= exp_difference;
+  }
+
+  // Divides this bignum by divisor, assigning the remainder to this and
+  // returning the quotient.
+  FMT_CONSTEXPR auto divmod_assign(const bigint& divisor) -> int {
+    FMT_ASSERT(this != &divisor, "");
+    if (compare(*this, divisor) < 0) return 0;
+    FMT_ASSERT(divisor.bigits_[divisor.bigits_.size() - 1u] != 0, "");
+    align(divisor);
+    int quotient = 0;
+    do {
+      subtract_aligned(divisor);
+      ++quotient;
+    } while (compare(*this, divisor) >= 0);
+    return quotient;
+  }
+};
+
+// format_dragon flags.
+enum dragon {
+  predecessor_closer = 1,
+  fixup = 2,  // Run fixup to correct exp10 which can be off by one.
+  fixed = 4,
+};
+
+// Formats a floating-point number using a variation of the Fixed-Precision
+// Positive Floating-Point Printout ((FPP)^2) algorithm by Steele & White:
+// https://fmt.dev/papers/p372-steele.pdf.
+FMT_CONSTEXPR20 inline void format_dragon(basic_fp<uint128_t> value,
+                                          unsigned flags, int num_digits,
+                                          buffer<char>& buf, int& exp10) {
+  bigint numerator;    // 2 * R in (FPP)^2.
+  bigint denominator;  // 2 * S in (FPP)^2.
+  // lower and upper are differences between value and corresponding boundaries.
+  bigint lower;             // (M^- in (FPP)^2).
+  bigint upper_store;       // upper's value if different from lower.
+  bigint* upper = nullptr;  // (M^+ in (FPP)^2).
+  // Shift numerator and denominator by an extra bit or two (if lower boundary
+  // is closer) to make lower and upper integers. This eliminates multiplication
+  // by 2 during later computations.
+  bool is_predecessor_closer = (flags & dragon::predecessor_closer) != 0;
+  int shift = is_predecessor_closer ? 2 : 1;
+  if (value.e >= 0) {
+    numerator = value.f;
+    numerator <<= value.e + shift;
+    lower = 1;
+    lower <<= value.e;
+    if (is_predecessor_closer) {
+      upper_store = 1;
+      upper_store <<= value.e + 1;
+      upper = &upper_store;
+    }
+    denominator.assign_pow10(exp10);
+    denominator <<= shift;
+  } else if (exp10 < 0) {
+    numerator.assign_pow10(-exp10);
+    lower.assign(numerator);
+    if (is_predecessor_closer) {
+      upper_store.assign(numerator);
+      upper_store <<= 1;
+      upper = &upper_store;
+    }
+    numerator *= value.f;
+    numerator <<= shift;
+    denominator = 1;
+    denominator <<= shift - value.e;
+  } else {
+    numerator = value.f;
+    numerator <<= shift;
+    denominator.assign_pow10(exp10);
+    denominator <<= shift - value.e;
+    lower = 1;
+    if (is_predecessor_closer) {
+      upper_store = 1ULL << 1;
+      upper = &upper_store;
+    }
+  }
+  int even = static_cast<int>((value.f & 1) == 0);
+  if (!upper) upper = &lower;
+  bool shortest = num_digits < 0;
+  if ((flags & dragon::fixup) != 0) {
+    // In the shortest mode the upper boundary is included because the output
+    // may round up to the next power of 10. With a given number of digits,
+    // rounding happens after digit generation, so only the value is compared.
+    bool too_high =
+        shortest ? add_compare(numerator, *upper, denominator) + even <= 0
+                 : compare(numerator, denominator) < 0;
+    if (too_high) {
+      --exp10;
+      numerator *= 10;
+      if (num_digits < 0) {
+        lower *= 10;
+        if (upper != &lower) *upper *= 10;
+      }
+    }
+    if ((flags & dragon::fixed) != 0) adjust_precision(num_digits, exp10 + 1);
+  }
+  // Invariant: value == (numerator / denominator) * pow(10, exp10).
+  if (shortest) {
+    // Generate the shortest representation.
+    num_digits = 0;
+    char* data = buf.data();
+    for (;;) {
+      int digit = numerator.divmod_assign(denominator);
+      bool low = compare(numerator, lower) - even < 0;  // numerator <[=] lower.
+      // numerator + upper >[=] pow10:
+      bool high = add_compare(numerator, *upper, denominator) + even > 0;
+      data[num_digits++] = static_cast<char>('0' + digit);
+      if (low || high) {
+        if (!low) {
+          ++data[num_digits - 1];
+        } else if (high) {
+          int result = add_compare(numerator, numerator, denominator);
+          // Round half to even.
+          if (result > 0 || (result == 0 && (digit % 2) != 0))
+            ++data[num_digits - 1];
+        }
+        buf.try_resize(to_unsigned(num_digits));
+        exp10 -= num_digits - 1;
+        return;
+      }
+      numerator *= 10;
+      lower *= 10;
+      if (upper != &lower) *upper *= 10;
+    }
+  }
+  // Generate the given number of digits.
+  exp10 -= num_digits - 1;
+  if (num_digits <= 0) {
+    auto digit = '0';
+    if (num_digits == 0) {
+      denominator *= 10;
+      digit = add_compare(numerator, numerator, denominator) > 0 ? '1' : '0';
+    }
+    buf.push_back(digit);
+    return;
+  }
+  buf.try_resize(to_unsigned(num_digits));
+  for (int i = 0; i < num_digits - 1; ++i) {
+    int digit = numerator.divmod_assign(denominator);
+    buf[i] = static_cast<char>('0' + digit);
+    numerator *= 10;
+  }
+  int digit = numerator.divmod_assign(denominator);
+  auto result = add_compare(numerator, numerator, denominator);
+  if (result > 0 || (result == 0 && (digit % 2) != 0)) {
+    if (digit == 9) {
+      const auto overflow = '0' + 10;
+      buf[num_digits - 1] = overflow;
+      // Propagate the carry.
+      for (int i = num_digits - 1; i > 0 && buf[i] == overflow; --i) {
+        buf[i] = '0';
+        ++buf[i - 1];
+      }
+      if (buf[0] == overflow) {
+        buf[0] = '1';
+        if ((flags & dragon::fixed) != 0)
+          buf.push_back('0');
+        else
+          ++exp10;
+      }
+      return;
+    }
+    ++digit;
+  }
+  buf[num_digits - 1] = static_cast<char>('0' + digit);
+}
+
+// Formats a floating-point number using the hexfloat format.
+template <typename Float, FMT_ENABLE_IF(!is_double_double<Float>::value)>
+FMT_CONSTEXPR20 void format_hexfloat(Float value, format_specs specs,
+                                     buffer<char>& buf) {
+  // float is passed as double to reduce the number of instantiations and to
+  // simplify implementation.
+  static_assert(!std::is_same<Float, float>::value, "");
+
+  using info = float_info<Float>;
+
+  // Assume Float is in the format [sign][exponent][significand].
+  using carrier_uint = typename info::carrier_uint;
+
+  const auto num_float_significand_bits = detail::num_significand_bits<Float>();
+
+  basic_fp<carrier_uint> f(value);
+  f.e += num_float_significand_bits;
+  if (!has_implicit_bit<Float>()) --f.e;
+  // Reset the exponent for zero to print it as 0x0p+0.
+  if (f.f == 0) f.e = 0;
+
+  const auto num_fraction_bits =
+      num_float_significand_bits + (has_implicit_bit<Float>() ? 1 : 0);
+  const auto num_xdigits = (num_fraction_bits + 3) / 4;
+
+  const auto leading_shift = ((num_xdigits - 1) * 4);
+  const auto leading_mask = carrier_uint(0xF) << leading_shift;
+  const auto leading_xdigit =
+      static_cast<uint32_t>((f.f & leading_mask) >> leading_shift);
+  if (leading_xdigit > 1) f.e -= (32 - countl_zero(leading_xdigit) - 1);
+
+  int print_xdigits = num_xdigits - 1;
+  if (specs.precision >= 0 && print_xdigits > specs.precision) {
+    const int shift = (print_xdigits - specs.precision) * 4;
+    const auto inc = carrier_uint(1) << shift;
+    // Round half to even like printf.
+    f.f += (inc >> 1) - 1 + ((f.f >> shift) & 1);
+
+    // Check long double overflow.
+    if (!has_implicit_bit<Float>()) {
+      const auto implicit_bit = carrier_uint(1) << num_float_significand_bits;
+      if ((f.f & implicit_bit) == implicit_bit) {
+        f.f >>= 4;
+        f.e += 4;
+      }
+    }
+
+    print_xdigits = specs.precision;
+  }
+
+  char xdigits[num_bits<carrier_uint>() / 4];
+  detail::fill_n(xdigits, sizeof(xdigits), '0');
+  format_base2e(4, xdigits, f.f, num_xdigits, specs.upper());
+
+  // Remove zero tail.
+  while (print_xdigits > 0 && xdigits[print_xdigits] == '0') --print_xdigits;
+
+  buf.push_back(xdigits[0]);
+  if (specs.alt() || print_xdigits > 0 || print_xdigits < specs.precision)
+    buf.push_back('.');
+  buf.append(xdigits + 1, xdigits + 1 + print_xdigits);
+  for (; print_xdigits < specs.precision; ++print_xdigits) buf.push_back('0');
+
+  buf.push_back(specs.upper() ? 'P' : 'p');
+
+  uint32_t abs_e;
+  if (f.e < 0) {
+    buf.push_back('-');
+    abs_e = static_cast<uint32_t>(-f.e);
+  } else {
+    buf.push_back('+');
+    abs_e = static_cast<uint32_t>(f.e);
+  }
+  format_decimal<char>(appender(buf), abs_e, detail::count_digits(abs_e));
+}
+
+template <typename Float, FMT_ENABLE_IF(is_double_double<Float>::value)>
+FMT_CONSTEXPR20 void format_hexfloat(Float value, format_specs specs,
+                                     buffer<char>& buf) {
+  format_hexfloat(static_cast<double>(value), specs, buf);
+}
+
+template <typename Char, typename OutputIt>
+FMT_CONSTEXPR auto write_hexfloat(OutputIt out, string_view s,
+                                  const format_specs& specs, locale_ref loc)
+    -> OutputIt {
+  Char point = FMT_USE_LOCALE && specs.localized()
+                   ? detail::decimal_point<Char>(loc)
+                   : Char('.');
+  return write_padded<Char, align::right>(
+      out, specs, s.size(), [=](reserve_iterator<OutputIt> it) {
+        for (char c : s) *it++ = c == '.' ? point : static_cast<Char>(c);
+        return it;
+      });
+}
+
+// Formats value rounded to precision significant digits or, if fixed, to
+// precision digits after the decimal point, as digits without the point in buf
+// and sets exp to the exponent of the last one. If that takes more than 18
+// digits, returns false and sets precision to their number and exp to the
+// exponent of the first one instead.
+FMT_API auto format_zmij(double value, int& precision, bool fixed,
+                         buffer<char>& buf, int& exp) -> bool;
+
+template <typename Float>
+FMT_CONSTEXPR20 auto format_float(Float value, int precision,
+                                  const format_specs& specs, bool binary32,
+                                  buffer<char>& buf) -> int {
+  // float is passed as double to reduce the number of instantiations.
+  static_assert(!std::is_same<Float, float>::value, "");
+  auto converted_value = convert_float(value);
+
+  const bool fixed = specs.type() == presentation_type::fixed;
+  if (value == 0) {
+    if (precision <= 0 || !fixed) {
+      buf.push_back('0');
+      return 0;
+    }
+    buf.try_resize(to_unsigned(precision));
+    fill_n(buf.data(), precision, '0');
+    return -precision;
+  }
+
+  int exp = 0;
+  bool use_dragon = true;
+  unsigned dragon_flags = 0;
+  if (!is_fast_float<Float>() || is_constant_evaluated()) {
+    const auto inv_log2_10 = 0.3010299956639812;  // 1 / log2(10)
+    using info = float_info<decltype(converted_value)>;
+    const auto f = basic_fp<typename info::carrier_uint>(converted_value);
+    // Compute exp, an approximate power of 10, such that
+    //   10^(exp - 1) <= value < 10^exp or 10^exp <= value < 10^(exp + 1).
+    // This is based on log10(value) == log2(value) / log2(10) and approximation
+    // of log2(value) by e + num_fraction_bits idea from double-conversion.
+    auto e = (f.e + count_digits<1>(f.f) - 1) * inv_log2_10 - 1e-10;
+    exp = static_cast<int>(e);
+    if (e > exp) ++exp;  // Compute ceil.
+    dragon_flags = dragon::fixup;
+  } else {
+    use_dragon =
+        !format_zmij(static_cast<double>(value), precision, fixed, buf, exp);
+  }
+  if (use_dragon) {
+    auto f = basic_fp<uint128_t>();
+    bool is_predecessor_closer = binary32 ? f.assign(static_cast<float>(value))
+                                          : f.assign(converted_value);
+    if (is_predecessor_closer) dragon_flags |= dragon::predecessor_closer;
+    if (fixed) dragon_flags |= dragon::fixed;
+    // Keep the fast double path's significant-digit limit.
+    int max_precision = 767;
+    if ((dragon_flags & dragon::fixup) != 0) {
+      // Before fixup, fixed precision counts fractional places rather than
+      // significant digits. f * 2^e has at most max(-e, 0) fractional places,
+      // and its significant digits are bounded by |e| + the bit length of f.
+      max_precision = fixed ? (f.e < 0 ? -f.e : 0)
+                            : count_digits<1>(f.f) + (f.e < 0 ? -f.e : f.e);
+    }
+    precision = min_of(precision, max_precision);
+    format_dragon(f, dragon_flags, precision, buf, exp);
+  }
+  if (!fixed && !specs.alt()) {
+    // Remove trailing zeros.
+    auto num_digits = buf.size();
+    while (num_digits > 0 && buf[num_digits - 1] == '0') {
+      --num_digits;
+      ++exp;
+    }
+    buf.try_resize(num_digits);
+  }
+  return exp;
+}
+
+template <typename Char, typename OutputIt, typename T,
+          FMT_ENABLE_IF(is_floating_point<T>::value)>
+FMT_CONSTEXPR20 auto write(OutputIt out, T value, format_specs specs,
+                           locale_ref loc = {}) -> OutputIt {
+  if (specs.localized() && write_loc(out, value, specs, loc)) return out;
+
+  // Use signbit because value < 0 is false for NaN.
+  sign s = detail::signbit(value) ? sign::minus : specs.sign();
+
+  if (!detail::isfinite(value))
+    return write_nonfinite<Char>(out, detail::isnan(value), specs, s);
+
+  if (specs.align() == align::numeric && s != sign::none) {
+    *out++ = detail::getsign<Char>(s);
+    s = sign::none;
+    if (specs.width != 0) --specs.width;
+  }
+
+  const int exp_upper = detail::exp_upper<T>();
+  int precision = specs.precision;
+  if (precision < 0) {
+    if (specs.type() != presentation_type::none) {
+      precision = 6;
+    } else if (is_fast_float<T>::value && !is_constant_evaluated()) {
+      // Use the shortest representation that round-trips.
+      auto dec = to_decimal(static_cast<fast_float_t<T>>(value));
+      return write_float<Char>(out, dec, specs, s, exp_upper, loc);
+    }
+  }
+
+  memory_buffer buffer;
+  if (specs.type() == presentation_type::hexfloat) {
+    if (s != sign::none) buffer.push_back(detail::getsign<char>(s));
+    if (specs.align() == align::numeric) {
+      // Write the prefix before the padding.
+      *out++ = static_cast<Char>('0');
+      *out++ = static_cast<Char>(specs.upper() ? 'X' : 'x');
+      specs.width -= min_of(specs.width, 2);
+    } else {
+      buffer.push_back('0');
+      buffer.push_back(specs.upper() ? 'X' : 'x');
+    }
+    format_hexfloat(convert_float(value), specs, buffer);
+    return write_hexfloat<Char>(out, {buffer.data(), buffer.size()}, specs,
+                                loc);
+  }
+
+  if (specs.type() == presentation_type::exp) {
+    if (precision == max_value<int>())
+      report_error("number is too big");
+    else
+      ++precision;
+    if (specs.precision != 0) specs.set_alt();
+  } else if (specs.type() == presentation_type::fixed) {
+    if (specs.precision != 0) specs.set_alt();
+  } else if (precision == 0) {
+    precision = 1;
+  }
+  int exp = format_float(convert_float(value), precision, specs,
+                         std::is_same<T, float>(), buffer);
+
+  specs.precision = precision;
+  auto f = big_decimal_fp{buffer.data(), static_cast<int>(buffer.size()), exp};
+  return write_float<Char>(out, f, specs, s, exp_upper, loc);
+}
+
+// Copies n chars, 1 <= n <= 32, with two overlapping copies of the same width.
+// Loads that don't line up with the stores zmij wrote the chars with stall on
+// store forwarding, which takes longer than writing them.
+inline void copy_shortest(char* to, const char* from, size_t n) {
+  if (n >= 16) {
+    memcpy(to, from, 16);
+    memcpy(to + n - 16, from + n - 16, 16);
+  } else if (n >= 8) {
+    memcpy(to, from, 8);
+    memcpy(to + n - 8, from + n - 8, 8);
+  } else if (n >= 4) {
+    memcpy(to, from, 4);
+    memcpy(to + n - 4, from + n - 4, 4);
+  } else {
+    // The first, middle and last chars cover 1 to 3 chars.
+    to[0] = from[0];
+    to[n / 2] = from[n / 2];
+    to[n - 1] = from[n - 1];
+  }
+}
+template <typename Char>
+void copy_shortest(Char* to, const char* from, size_t n) {
+  for (size_t i = 0; i < n; ++i) to[i] = static_cast<Char>(from[i]);
+}
+
+template <typename Char, typename OutputIt, typename T,
+          FMT_ENABLE_IF(is_fast_float<T>::value)>
+FMT_CONSTEXPR20 auto write(OutputIt out, T value) -> OutputIt {
+  if (is_constant_evaluated()) return write<Char>(out, value, format_specs());
+  // zmij writes the sign, inf and nan as well and can store past the end.
+  char buf[zmij::double_buffer_size];
+  char* end = zmij::detail::write(buf, static_cast<fast_float_t<T>>(value));
+  auto size = to_unsigned(end - buf);
+  if (Char* ptr = to_pointer<Char>(out, size)) {
+    copy_shortest(ptr, buf, size);
+    return out;
+  }
+  return copy<Char>(buf, end, out);
+}
+
+template <typename Char, typename OutputIt, typename T,
+          FMT_ENABLE_IF(is_floating_point<T>::value &&
+                        !is_fast_float<T>::value)>
+inline auto write(OutputIt out, T value) -> OutputIt {
+  return write<Char>(out, value, {});
+}
+
+template <typename Char, typename OutputIt>
+auto write(OutputIt out, monostate, format_specs = {}, locale_ref = {})
+    -> OutputIt {
+  FMT_ASSERT(false, "");
+  return out;
+}
+
+template <typename Char, typename OutputIt>
+FMT_CONSTEXPR auto write(OutputIt out, basic_string_view<Char> value)
+    -> OutputIt {
+  return copy_noinline<Char>(value.begin(), value.end(), out);
+}
+
+template <typename Char, typename OutputIt, typename T,
+          FMT_ENABLE_IF(has_to_string_view<T>::value)>
+constexpr auto write(OutputIt out, const T& value) -> OutputIt {
+  return write<Char>(out, detail::to_string_view(value));
+}
+
+// FMT_ENABLE_IF() condition separated to workaround an MSVC bug.
+template <
+    typename Char, typename OutputIt, typename T,
+    bool check = std::is_enum<T>::value && !std::is_same<T, Char>::value &&
+                 mapped_type_constant<T, Char>::value != type::custom_type,
+    FMT_ENABLE_IF(check)>
+FMT_CONSTEXPR auto write(OutputIt out, T value) -> OutputIt {
+  return write<Char>(out, static_cast<underlying_t<T>>(value));
+}
+
+template <typename Char, typename OutputIt, typename T,
+          FMT_ENABLE_IF(std::is_same<T, bool>::value)>
+FMT_CONSTEXPR auto write(OutputIt out, T value, const format_specs& specs = {},
+                         locale_ref = {}) -> OutputIt {
+  return specs.type() != presentation_type::none &&
+                 specs.type() != presentation_type::string
+             ? write<Char>(out, value ? 1 : 0, specs, {})
+             : write_bytes<Char>(out, value ? "true" : "false", specs);
+}
+
+template <typename Char, typename OutputIt>
+FMT_CONSTEXPR auto write(OutputIt out, Char value) -> OutputIt {
+  auto it = reserve(out, 1);
+  *it++ = value;
+  return base_iterator(out, it);
+}
+
+template <typename Char, typename OutputIt>
+FMT_CONSTEXPR20 auto write(OutputIt out, const Char* value) -> OutputIt {
+  if (value) return write(out, basic_string_view<Char>(value));
+  report_error("string pointer is null");
+  return out;
+}
+
+template <typename Char, typename OutputIt, typename T,
+          FMT_ENABLE_IF(std::is_same<T, void>::value)>
+auto write(OutputIt out, const T* value, const format_specs& specs = {},
+           locale_ref = {}) -> OutputIt {
+  return write_ptr<Char>(out, bit_cast<uintptr_t>(value), &specs);
+}
+
+template <typename Char, typename OutputIt>
+auto write(OutputIt out, nullptr_t) -> OutputIt {
+  return write<Char>(out, static_cast<const void*>(nullptr));
+}
+
+template <typename Char, typename OutputIt, typename T,
+          FMT_ENABLE_IF(mapped_type_constant<T, Char>::value ==
+                            type::custom_type &&
+                        !std::is_fundamental<T>::value)>
+FMT_CONSTEXPR auto write(OutputIt out, const T& value) -> OutputIt {
+  auto f = formatter<T, Char>();
+  auto parse_ctx = parse_context<Char>({});
+  f.parse(parse_ctx);
+  auto ctx = basic_format_context<OutputIt, Char>(out, {}, {});
+  return f.format(value, ctx);
+}
+
+template <typename T>
+using is_builtin =
+    bool_constant<std::is_same<T, int>::value || FMT_BUILTIN_TYPES>;
+
+// An argument visitor that formats the argument and writes it via the output
+// iterator. It's a class and not a generic lambda for compatibility with C++11.
+template <typename Char> struct default_arg_formatter {
+  using context = buffered_context<Char>;
+
+  basic_appender<Char> out;
+
+  void operator()(monostate) { report_error("argument not found"); }
+
+  template <typename T, FMT_ENABLE_IF(is_builtin<T>::value)>
+  void operator()(T value) {
+    write<Char>(out, value);
+  }
+
+  template <typename T, FMT_ENABLE_IF(!is_builtin<T>::value)>
+  void operator()(T) {
+    FMT_ASSERT(false, "");
+  }
+
+  void operator()(typename basic_format_arg<context>::handle h) {
+    // Use a null locale since the default format must be unlocalized.
+    auto parse_ctx = parse_context<Char>({});
+    auto format_ctx = context(out, {}, {});
+    h.format(parse_ctx, format_ctx);
+  }
+};
+
+template <typename Char> struct arg_formatter {
+  basic_appender<Char> out;
+  const format_specs& specs;
+  FMT_NO_UNIQUE_ADDRESS locale_ref locale;
+
+  template <typename T, FMT_ENABLE_IF(is_builtin<T>::value)>
+  FMT_CONSTEXPR FMT_INLINE void operator()(T value) {
+    detail::write<Char>(out, value, specs, locale);
+  }
+
+  template <typename T, FMT_ENABLE_IF(!is_builtin<T>::value)>
+  void operator()(T) {
+    FMT_ASSERT(false, "");
+  }
+
+  void operator()(typename basic_format_arg<buffered_context<Char>>::handle) {
+    // User-defined types are handled separately because they require access
+    // to the parse context.
+  }
+};
+
+struct dynamic_spec_getter {
+  template <typename T, FMT_ENABLE_IF(is_integer<T>::value)>
+  FMT_CONSTEXPR auto operator()(T value) -> ullong {
+    return is_negative(value) ? ~0ull : static_cast<ullong>(value);
+  }
+
+  template <typename T, FMT_ENABLE_IF(!is_integer<T>::value)>
+  FMT_CONSTEXPR auto operator()(T) -> ullong {
+    report_error("width/precision is not integer");
+    return 0;
+  }
+};
+
+template <typename Context>
+FMT_CONSTEXPR void handle_dynamic_spec(
+    arg_id_kind kind, int& value,
+    const arg_ref<typename Context::char_type>& ref, Context& ctx) {
+  if (kind == arg_id_kind::none) return;
+  auto arg =
+      kind == arg_id_kind::index ? ctx.arg(ref.index) : ctx.arg(ref.name);
+  if (!arg) report_error("argument not found");
+  ullong result = arg.visit(dynamic_spec_getter());
+  if (result > to_unsigned(max_value<int>()))
+    report_error("width/precision is out of range");
+  value = static_cast<int>(result);
+}
+
+#if FMT_USE_NONTYPE_TEMPLATE_ARGS
+template <typename T, typename Char, size_t N,
+          fmt::detail::fixed_string<Char, N> Str>
+struct static_named_arg : view {
+  static constexpr auto name = Str.data;
+
+  const T& value;
+  static_named_arg(const T& v) : value(v) {}
+};
+
+template <typename T, typename Char, size_t N,
+          fmt::detail::fixed_string<Char, N> Str>
+struct is_named_arg<static_named_arg<T, Char, N, Str>> : std::true_type {};
+
+template <typename T, typename Char, size_t N,
+          fmt::detail::fixed_string<Char, N> Str>
+struct is_static_named_arg<static_named_arg<T, Char, N, Str>> : std::true_type {
+};
+
+template <typename Char, size_t N, fmt::detail::fixed_string<Char, N> Str>
+struct udl_arg {
+  template <typename T> auto operator=(T&& value) const {
+    return static_named_arg<T, Char, N, Str>(std::forward<T>(value));
+  }
+};
+#else
+template <typename Char> struct udl_arg {
+  const Char* str;
+
+  template <typename T> auto operator=(T&& value) const -> named_arg<T, Char> {
+    return {str, std::forward<T>(value)};
+  }
+};
+#endif  // FMT_USE_NONTYPE_TEMPLATE_ARGS
+
+template <typename Char = char> struct format_handler {
+  parse_context<Char> parse_ctx;
+  buffered_context<Char> ctx;
+
+  void on_text(const Char* begin, const Char* end) {
+    copy_noinline<Char>(begin, end, ctx.out());
+  }
+
+  FMT_CONSTEXPR auto on_arg_id() -> int { return parse_ctx.next_arg_id(); }
+  FMT_CONSTEXPR auto on_arg_id(int id) -> int {
+    parse_ctx.check_arg_id(id);
+    return id;
+  }
+  FMT_CONSTEXPR auto on_arg_id(basic_string_view<Char> id) -> int {
+    parse_ctx.check_arg_id(id);
+    int arg_id = ctx.arg_id(id);
+    if (arg_id < 0) report_error("argument not found");
+    return arg_id;
+  }
+
+  FMT_INLINE void on_replacement_field(int id, const Char*) {
+    ctx.arg(id).visit(default_arg_formatter<Char>{ctx.out()});
+  }
+
+  auto on_format_specs(int id, const Char* begin, const Char* end)
+      -> const Char* {
+    auto arg = ctx.arg(id);
+    if (!arg) report_error("argument not found");
+    // Not using a visitor for custom types gives better codegen.
+    if (arg.format_custom(begin, parse_ctx, ctx)) return parse_ctx.begin();
+
+    auto specs = dynamic_format_specs<Char>();
+    begin = parse_format_specs(begin, end, specs, parse_ctx, arg.type());
+    if (specs.dynamic()) {
+      handle_dynamic_spec(specs.dynamic_width(), specs.width, specs.width_ref,
+                          ctx);
+      handle_dynamic_spec(specs.dynamic_precision(), specs.precision,
+                          specs.precision_ref, ctx);
+    }
+
+    arg.visit(arg_formatter<Char>{ctx.out(), specs, ctx.locale()});
+    return begin;
+  }
+
+  FMT_NORETURN void on_error(const char* message) { report_error(message); }
+};
+
+// It is used in format-inl.h and os.cc.
+using format_func = void (*)(detail::buffer<char>&, int, const char*);
+FMT_API void do_report_error(format_func func, int error_code,
+                             const char* message) noexcept;
+
+FMT_API void format_error_code(buffer<char>& out, int error_code,
+                               string_view message) noexcept;
+
+template <typename T, typename Char, type TYPE>
+template <typename FormatContext>
+FMT_CONSTEXPR auto native_formatter<T, Char, TYPE>::format(
+    const T& val, FormatContext& ctx) const -> decltype(ctx.out()) {
+  if (!specs_.dynamic())
+    return write<Char>(ctx.out(), val, specs_, ctx.locale());
+  auto specs = format_specs(specs_);
+  handle_dynamic_spec(specs.dynamic_width(), specs.width, specs_.width_ref,
+                      ctx);
+  handle_dynamic_spec(specs.dynamic_precision(), specs.precision,
+                      specs_.precision_ref, ctx);
+  return write<Char>(ctx.out(), val, specs, ctx.locale());
+}
+
+// Parses and applies the outer alignment and width of a nested value.
+template <typename Char> class nested_format_specs {
+ private:
+  format_specs specs_;
+  arg_ref<Char> width_ref_;
+
+ public:
+  constexpr nested_format_specs() : specs_(), width_ref_() {}
+
+  FMT_CONSTEXPR auto parse(const Char* begin, const Char* end,
+                           parse_context<Char>& ctx) -> const Char* {
+    if (begin == end || *begin == '}') return begin;
+    begin = parse_align(begin, end, specs_);
+    if (begin == end) return begin;
+    Char c = *begin;
+    if ((c >= '0' && c <= '9') || c == '{')
+      begin = parse_width(begin, end, specs_, width_ref_, ctx);
+    return begin;
+  }
+
+  FMT_CONSTEXPR auto parse(const Char* begin, const Char* end,
+                           parse_context<Char>& ctx, Char separator)
+      -> const Char* {
+    // A separator introduces the nested spec and is never a fill character.
+    if (begin != end && *begin == separator) return begin;
+    return parse(begin, end, ctx);
+  }
+
+  template <typename FormatContext, typename F, typename... T>
+  FMT_CONSTEXPR auto write(FormatContext& ctx, const F& f, T&&... values) const
+      -> decltype(ctx.out()) {
+    auto specs = specs_;
+    handle_dynamic_spec(specs.dynamic_width(), specs.width, width_ref_, ctx);
+    if (specs.width == 0) return f.write_body(ctx, static_cast<T&&>(values)...);
+
+    // FormatContext can only be reused if it writes to an appender (#4949).
+    using buffer_context = conditional_t<
+        std::is_same<decltype(ctx.out()), basic_appender<Char>>::value,
+        FormatContext,
+        generic_context<basic_appender<Char>, Char, FormatContext>>;
+    auto buf = basic_memory_buffer<Char>();
+    auto buffer_ctx =
+        buffer_context(basic_appender<Char>(buf), ctx.args(), ctx.locale());
+    f.write_body(buffer_ctx, static_cast<T&&>(values)...);
+    return detail::write<Char>(
+        ctx.out(), basic_string_view<Char>(buf.data(), buf.size()), specs);
+  }
+};
+
+template <typename T, typename Enable = void>
+struct has_format_as : std::false_type {};
+template <typename T>
+struct has_format_as<T, void_t<format_as_result<T>>> : std::true_type {};
+}  // namespace detail
+
+FMT_BEGIN_EXPORT
+
+// A generic formatting context with custom output iterator and character
+// (code unit) support. Char is the format string code unit type which can be
+// different from OutputIt::value_type. ArgContext is the context the arguments
+// are typed on; void means the context itself.
+template <typename OutputIt, typename Char, typename ArgContext>
+class generic_context {
+ private:
+  using arg_context = conditional_t<std::is_void<ArgContext>::value,
+                                    generic_context, ArgContext>;
+
+  OutputIt out_;
+  basic_format_args<arg_context> args_;
+  locale_ref loc_;
+
+ public:
+  using char_type = Char;
+  using iterator = OutputIt;
+  enum { builtin_types = FMT_BUILTIN_TYPES };
+
+  constexpr generic_context(OutputIt out, basic_format_args<arg_context> args,
+                            locale_ref loc = {})
+      : out_(out), args_(args), loc_(loc) {}
+  generic_context(generic_context&&) = default;
+  generic_context(const generic_context&) = delete;
+  void operator=(const generic_context&) = delete;
+
+  constexpr auto arg(int id) const -> basic_format_arg<arg_context> {
+    return args_.get(id);
+  }
+  auto arg(basic_string_view<Char> name) const
+      -> basic_format_arg<arg_context> {
+    return args_.get(name);
+  }
+  constexpr auto arg_id(basic_string_view<Char> name) const -> int {
+    return args_.get_id(name);
+  }
+  auto args() const -> const basic_format_args<arg_context>& { return args_; }
+
+  constexpr auto out() const -> iterator { return out_; }
+
+  FMT_CONSTEXPR void advance_to(iterator it) {
+    if (!detail::is_back_insert_iterator<iterator>()) out_ = it;
+  }
+
+  constexpr auto locale() const -> locale_ref { return loc_; }
+};
+
+class loc_value {
+ private:
+  basic_format_arg<context> value_;
+
+ public:
+  template <typename T, FMT_ENABLE_IF(!detail::is_float128<T>::value)>
+  loc_value(T value) : value_(value) {}
+
+  template <typename T, FMT_ENABLE_IF(detail::is_float128<T>::value)>
+  loc_value(T) {}
+
+  template <typename Visitor> auto visit(Visitor&& vis) -> decltype(vis(0)) {
+    return value_.visit(vis);
+  }
+};
+
+// A locale facet that formats values in UTF-8.
+// It is parameterized on the locale to avoid the heavy <locale> include.
+template <typename Locale> class format_facet : public Locale::facet {
+ private:
+  std::string separator_;
+  std::string grouping_;
+  std::string decimal_point_;
+
+ protected:
+  virtual auto do_put(appender out, loc_value val,
+                      const format_specs& specs) const -> bool;
+
+ public:
+  static FMT_API typename Locale::id id;
+
+  explicit format_facet(Locale& loc);
+  explicit format_facet(string_view sep = "", std::string grouping = "\3",
+                        std::string decimal_point = ".")
+      : separator_(sep.data(), sep.size()),
+        grouping_(std::move(grouping)),
+        decimal_point_(std::move(decimal_point)) {}
+
+  auto put(appender out, loc_value val, const format_specs& specs) const
+      -> bool {
+    return do_put(out, val, specs);
+  }
+};
+
+#define FMT_FORMAT_AS(Type, Base)                                   \
+  template <typename Char>                                          \
+  struct formatter<Type, Char> : formatter<Base, Char> {            \
+    template <typename FormatContext>                               \
+    FMT_CONSTEXPR auto format(Type value, FormatContext& ctx) const \
+        -> decltype(ctx.out()) {                                    \
+      return formatter<Base, Char>::format(value, ctx);             \
+    }                                                               \
+  }
+
+FMT_FORMAT_AS(signed char, int);
+FMT_FORMAT_AS(unsigned char, unsigned);
+FMT_FORMAT_AS(short, int);
+FMT_FORMAT_AS(unsigned short, unsigned);
+FMT_FORMAT_AS(long, detail::long_type);
+FMT_FORMAT_AS(unsigned long, detail::ulong_type);
+FMT_FORMAT_AS(Char*, const Char*);
+FMT_FORMAT_AS(detail::std_string_view<Char>, basic_string_view<Char>);
+FMT_FORMAT_AS(std::nullptr_t, const void*);
+FMT_FORMAT_AS(void*, const void*);
+
+template <typename Char, size_t N>
+struct formatter<Char[N], Char> : formatter<basic_string_view<Char>, Char> {};
+
+template <typename Char, typename Traits, typename Allocator>
+class formatter<std::basic_string<Char, Traits, Allocator>, Char>
+    : public formatter<basic_string_view<Char>, Char> {};
+
+template <typename Char>
+struct formatter<detail::float128, Char>
+    : detail::native_formatter<detail::float128, Char,
+                               detail::type::float_type> {};
+
+template <typename T, typename Char>
+struct formatter<T, Char, void_t<detail::format_as_result<T>>>
+    : formatter<detail::format_as_result<T>, Char> {
+  template <typename FormatContext>
+  FMT_CONSTEXPR auto format(const T& value, FormatContext& ctx) const
+      -> decltype(ctx.out()) {
+    auto&& val = format_as(value);  // Make an lvalue reference for format.
+    return formatter<detail::format_as_result<T>, Char>::format(val, ctx);
+  }
+};
+
+/**
+ * Converts `p` to `const void*` for pointer formatting.
+ *
+ * **Example**:
+ *
+ *     auto s = fmt::format("{}", fmt::ptr(p));
+ */
+template <typename T> auto ptr(T p) -> const void* {
+  static_assert(std::is_pointer<T>::value, "fmt::ptr used with non-pointer");
+  return detail::bit_cast<const void*>(p);
+}
+
+/**
+ * Converts `e` to the underlying type.
+ *
+ * **Example**:
+ *
+ *     enum class color { red, green, blue };
+ *     auto s = fmt::format("{}", fmt::underlying(color::red));  // s == "0"
+ */
+template <typename Enum>
+constexpr auto underlying(Enum e) noexcept -> underlying_t<Enum> {
+  return static_cast<underlying_t<Enum>>(e);
+}
+
+namespace enums {
+template <typename Enum, FMT_ENABLE_IF(std::is_enum<Enum>::value)>
+constexpr auto format_as(Enum e) noexcept -> underlying_t<Enum> {
+  return static_cast<underlying_t<Enum>>(e);
+}
+}  // namespace enums
+
+struct bytes {
+  string_view data;
+
+  inline explicit bytes(string_view s) : data(s) {}
+};
+
+template <> struct formatter<bytes> {
+ private:
+  detail::dynamic_format_specs<> specs_;
+
+ public:
+  FMT_CONSTEXPR auto parse(parse_context<>& ctx) -> const char* {
+    return parse_format_specs(ctx.begin(), ctx.end(), specs_, ctx,
+                              detail::type::string_type);
+  }
+
+  template <typename FormatContext>
+  auto format(bytes b, FormatContext& ctx) const -> decltype(ctx.out()) {
+    auto specs = specs_;
+    detail::handle_dynamic_spec(specs.dynamic_width(), specs.width,
+                                specs.width_ref, ctx);
+    detail::handle_dynamic_spec(specs.dynamic_precision(), specs.precision,
+                                specs.precision_ref, ctx);
+    return detail::write_bytes<char>(ctx.out(), b.data, specs);
+  }
+};
+
+// group_digits_view is not derived from view because it copies the argument.
+template <typename T> struct group_digits_view {
+  T value;
+};
+
+/**
+ * Returns a view that formats an integer value using ',' as a
+ * locale-independent thousands separator.
+ *
+ * **Example**:
+ *
+ *     fmt::print("{}", fmt::group_digits(12345));
+ *     // Output: "12,345"
+ */
+template <typename T> auto group_digits(T value) -> group_digits_view<T> {
+  return {value};
+}
+
+template <typename T> struct formatter<group_digits_view<T>> : formatter<T> {
+ private:
+  detail::dynamic_format_specs<> specs_;
+
+ public:
+  FMT_CONSTEXPR auto parse(parse_context<>& ctx) -> const char* {
+    return parse_format_specs(ctx.begin(), ctx.end(), specs_, ctx,
+                              detail::type::int_type);
+  }
+
+  template <typename FormatContext>
+  auto format(group_digits_view<T> view, FormatContext& ctx) const
+      -> decltype(ctx.out()) {
+    auto specs = specs_;
+    detail::handle_dynamic_spec(specs.dynamic_width(), specs.width,
+                                specs.width_ref, ctx);
+    detail::handle_dynamic_spec(specs.dynamic_precision(), specs.precision,
+                                specs.precision_ref, ctx);
+    auto arg = detail::make_write_int_arg(view.value, specs.sign());
+    return detail::write_int(
+        ctx.out(), static_cast<detail::uint64_or_128_t<T>>(arg.abs_value),
+        arg.prefix, specs, detail::digit_grouping<char>("\3", ","));
+  }
+};
+
+template <typename T> struct nested_view {
+  const T* value;
+};
+
+template <typename U, typename Char = char> struct nested_formatter {
+ private:
+  detail::nested_format_specs<Char> specs_;
+  formatter<U, Char> formatter_;
+
+  template <typename FormatContext>
+  auto write_arg(FormatContext& ctx, nested_view<U> view) const
+      -> decltype(ctx.out()) {
+    return formatter_.format(*view.value, ctx);
+  }
+
+  template <typename FormatContext, typename V>
+  auto write_arg(FormatContext& ctx, const V& value) const
+      -> decltype(ctx.out()) {
+    return detail::write<Char>(ctx.out(), value);
+  }
+
+  template <typename FormatContext, typename... T>
+  auto write_body(FormatContext& ctx, const T&... args) const
+      -> decltype(ctx.out()) {
+    FMT_APPLY_VARIADIC(ctx.advance_to(write_arg(ctx, args)));
+    return ctx.out();
+  }
+
+  friend class detail::nested_format_specs<Char>;
+
+ public:
+  constexpr nested_formatter() : specs_(), formatter_() {}
+
+  FMT_CONSTEXPR auto parse(parse_context<Char>& ctx) -> const Char* {
+    auto it = ctx.begin(), end = ctx.end();
+    if (it == end) return it;
+    it = specs_.parse(it, end, ctx);
+    ctx.advance_to(it);
+    return formatter_.parse(ctx);
+  }
+
+  template <typename FormatContext, typename... T>
+  auto write(FormatContext& ctx, const T&... args) const
+      -> decltype(ctx.out()) {
+    return specs_.write(ctx, *this, args...);
+  }
+
+  auto nested(const U& value) const -> nested_view<U> { return {&value}; }
+};
+
+inline namespace literals {
+#if FMT_USE_NONTYPE_TEMPLATE_ARGS
+/**
+ * User-defined literal equivalent of `fmt::arg`, but with compile-time checks.
+ *
+ * **Example**:
+ *
+ *     using namespace fmt::literals;
+ *     fmt::print("The answer is {answer}.", "answer"_a=42);
+ */
+template <detail::fixed_string S> constexpr auto operator""_a() {
+  using char_t = remove_cvref_t<decltype(*S.data)>;
+  return detail::udl_arg<char_t, sizeof(S.data) / sizeof(char_t), S>();
+}
+#else
+/**
+ * User-defined literal equivalent of `fmt::arg`.
+ *
+ * **Example**:
+ *
+ *     using namespace fmt::literals;
+ *     fmt::print("The answer is {answer}.", "answer"_a=42);
+ */
+constexpr auto operator""_a(const char* s, size_t) -> detail::udl_arg<char> {
+  return {s};
+}
+#endif  // FMT_USE_NONTYPE_TEMPLATE_ARGS
+}  // namespace literals
+
+/// A fast integer formatter.
+class format_int {
+ private:
+  // Buffer should be large enough to hold all digits (digits10 + 1),
+  // a sign and a null character.
+  enum { buffer_size = std::numeric_limits<ullong>::digits10 + 3 };
+  mutable char buffer_[buffer_size];
+  char* str_;
+
+  template <typename UInt>
+  FMT_CONSTEXPR20 auto format_unsigned(UInt value) -> char* {
+    auto n = static_cast<detail::uint32_or_64_or_128_t<UInt>>(value);
+    return detail::do_format_decimal(buffer_, n, buffer_size - 1);
+  }
+
+  template <typename Int>
+  FMT_CONSTEXPR20 auto format_signed(Int value) -> char* {
+    auto abs_value = static_cast<detail::uint32_or_64_or_128_t<Int>>(value);
+    bool negative = value < 0;
+    if (negative) abs_value = 0 - abs_value;
+    auto begin = format_unsigned(abs_value);
+    if (negative) *--begin = '-';
+    return begin;
+  }
+
+ public:
+  FMT_CONSTEXPR20 explicit format_int(int value) : str_(format_signed(value)) {}
+  FMT_CONSTEXPR20 explicit format_int(long value)
+      : str_(format_signed(value)) {}
+  FMT_CONSTEXPR20 explicit format_int(long long value)
+      : str_(format_signed(value)) {}
+  FMT_CONSTEXPR20 explicit format_int(unsigned value)
+      : str_(format_unsigned(value)) {}
+  FMT_CONSTEXPR20 explicit format_int(unsigned long value)
+      : str_(format_unsigned(value)) {}
+  FMT_CONSTEXPR20 explicit format_int(ullong value)
+      : str_(format_unsigned(value)) {}
+
+  /// Returns the number of characters written to the output buffer.
+  FMT_CONSTEXPR20 auto size() const -> size_t {
+    return detail::to_unsigned(buffer_ - str_ + buffer_size - 1);
+  }
+
+  /// Returns a pointer to the output buffer content. No terminating null
+  /// character is appended.
+  FMT_CONSTEXPR20 auto data() const -> const char* { return str_; }
+
+  /// Returns a pointer to the output buffer content with terminating null
+  /// character appended.
+  FMT_CONSTEXPR20 auto c_str() const -> const char* {
+    buffer_[buffer_size - 1] = '\0';
+    return str_;
+  }
+
+  /// Returns the content of the output buffer as an `std::string`.
+  inline auto str() const -> std::string { return {str_, size()}; }
+};
+
+#define FMT_STRING_IMPL(s, base)                                              \
+  [] {                                                                        \
+    /* Use the hidden visibility as a workaround for a GCC bug (#1973). */    \
+    /* Use a macro-like name to avoid shadowing warnings. */                  \
+    struct FMT_VISIBILITY("hidden") FMT_COMPILE_STRING : base {               \
+      using char_type = fmt::remove_cvref_t<decltype(s[0])>;                  \
+      constexpr explicit operator fmt::basic_string_view<char_type>() const { \
+        return fmt::detail::compile_string_to_view<char_type>(s);             \
+      }                                                                       \
+    };                                                                        \
+    using FMT_STRING_VIEW =                                                   \
+        fmt::basic_string_view<typename FMT_COMPILE_STRING::char_type>;       \
+    fmt::detail::ignore_unused(FMT_STRING_VIEW(FMT_COMPILE_STRING()));        \
+    return FMT_COMPILE_STRING();                                              \
+  }()
+
+/**
+ * Constructs a legacy compile-time format string from a string literal `s`.
+ *
+ * **Example**:
+ *
+ *     // A compile-time error because 'd' is an invalid specifier for strings.
+ *     std::string s = fmt::format(FMT_STRING("{:d}"), "foo");
+ */
+#if FMT_USE_CONSTEVAL
+#  define FMT_STRING(s) s
+#else
+#  define FMT_STRING(s) FMT_STRING_IMPL(s, fmt::detail::compile_string)
+#endif  // FMT_USE_CONSTEVAL
+
+FMT_API auto vsystem_error(int error_code, string_view fmt, format_args args)
+    -> std::system_error;
+
+/**
+ * Constructs `std::system_error` with a message formatted with
+ * `fmt::format(fmt, args...)`.
+ * `error_code` is a system error code as given by `errno`.
+ *
+ * **Example**:
+ *
+ *     // This throws std::system_error with the description
+ *     //   cannot open file 'madeup': No such file or directory
+ *     // or similar (system message may vary).
+ *     const char* filename = "madeup";
+ *     FILE* file = fopen(filename, "r");
+ *     if (!file)
+ *       throw fmt::system_error(errno, "cannot open file '{}'", filename);
+ */
+template <typename... T>
+auto system_error(int error_code, format_string<T...> fmt, T&&... args)
+    -> std::system_error {
+  return vsystem_error(error_code, fmt.str, vargs<T...>{{args...}});
+}
+
+/**
+ * Formats an error message for an error returned by an operating system or a
+ * language runtime, for example a file opening error, and writes it to `out`.
+ * The format is the same as the one used by `std::system_error(ec, message)`
+ * where `ec` is `std::error_code(error_code, std::generic_category())`.
+ * It is implementation-defined but normally looks like:
+ *
+ *     <message>: <system-message>
+ *
+ * where `<message>` is the passed message and `<system-message>` is the system
+ * message corresponding to the error code.
+ * `error_code` is a system error code as given by `errno`.
+ */
+FMT_API void format_system_error(detail::buffer<char>& out, int error_code,
+                                 const char* message) noexcept;
+
+// Reports a system error without throwing an exception.
+// Can be used to report errors from destructors.
+FMT_API void report_system_error(int error_code, const char* message) noexcept;
+
+inline auto vformat(locale_ref loc, string_view fmt, format_args args)
+    -> std::string {
+  auto buf = memory_buffer();
+  detail::vformat_to(buf, fmt, args, loc);
+  return {buf.data(), buf.size()};
+}
+
+template <typename... T>
+FMT_INLINE auto format(locale_ref loc, format_string<T...> fmt, T&&... args)
+    -> std::string {
+  return vformat(loc, fmt.str, vargs<T...>{{args...}});
+}
+
+template <typename OutputIt,
+          FMT_ENABLE_IF(detail::is_output_iterator<OutputIt, char>::value)>
+auto vformat_to(OutputIt out, locale_ref loc, string_view fmt, format_args args)
+    -> OutputIt {
+  auto&& buf = detail::get_buffer<char>(out);
+  detail::vformat_to(buf, fmt, args, loc);
+  return detail::get_iterator(buf, out);
+}
+
+template <typename OutputIt, typename... T,
+          FMT_ENABLE_IF(detail::is_output_iterator<OutputIt, char>::value)>
+FMT_INLINE auto format_to(OutputIt out, locale_ref loc, format_string<T...> fmt,
+                          T&&... args) -> OutputIt {
+  return fmt::vformat_to(out, loc, fmt.str, vargs<T...>{{args...}});
+}
+
+template <typename... T>
+FMT_NODISCARD FMT_INLINE auto formatted_size(locale_ref loc,
+                                             format_string<T...> fmt,
+                                             T&&... args) -> size_t {
+  auto buf = detail::counting_buffer<>();
+  detail::vformat_to(buf, fmt.str, vargs<T...>{{args...}}, loc);
+  return buf.count();
+}
+
+FMT_API auto vformat(string_view fmt, format_args args) -> std::string;
+
+/**
+ * Formats `args` according to specifications in `fmt` and returns the result
+ * as a string.
+ *
+ * **Example**:
+ *
+ *     #include <fmt/format.h>
+ *     std::string message = fmt::format("The answer is {}.", 42);
+ */
+template <typename... T>
+FMT_NODISCARD FMT_INLINE auto format(format_string<T...> fmt, T&&... args)
+    -> std::string {
+  return vformat(fmt.str, vargs<T...>{{args...}});
+}
+
+/**
+ * Converts `value` to `std::string` using the default format for type `T`.
+ *
+ * **Example**:
+ *
+ *     std::string answer = fmt::to_string(42);
+ */
+template <typename T, FMT_ENABLE_IF(std::is_integral<T>::value)>
+FMT_NODISCARD FMT_CONSTEXPR_STRING auto to_string(T value) -> std::string {
+  // The buffer should be large enough to store the number including the sign
+  // or "false" for bool.
+  char buffer[max_of(detail::digits10<T>() + 2, 5)];
+  return {buffer, detail::write<char>(buffer, value)};
+}
+
+template <typename T, FMT_ENABLE_IF(detail::use_format_as<T>::value)>
+FMT_NODISCARD FMT_CONSTEXPR_STRING auto to_string(const T& value)
+    -> std::string {
+  return to_string(format_as(value));
+}
+
+template <typename T, FMT_ENABLE_IF(!std::is_integral<T>::value &&
+                                    !detail::use_format_as<T>::value)>
+FMT_NODISCARD FMT_CONSTEXPR_STRING auto to_string(const T& value)
+    -> std::string {
+  auto buffer = memory_buffer();
+  detail::write<char>(appender(buffer), value);
+  return {buffer.data(), buffer.size()};
+}
+
+FMT_END_EXPORT
+FMT_END_NAMESPACE
+
+#ifdef FMT_HEADER_ONLY
+#  define FMT_FUNC inline
+#  include "format-inl.h"
+#endif
+
+// Restore _LIBCPP_REMOVE_TRANSITIVE_INCLUDES.
+#ifdef FMT_REMOVE_TRANSITIVE_INCLUDES
+#  undef _LIBCPP_REMOVE_TRANSITIVE_INCLUDES
+#endif
+
+#endif  // FMT_FORMAT_H_
