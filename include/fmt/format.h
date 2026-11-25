@@ -3278,6 +3278,11 @@ FMT_CONSTEXPR FMT_NOINLINE auto fill(OutputIt it, size_t n,
   return it;
 }
 
+FMT_CONSTEXPR auto compute_padding(unsigned spec_width, size_t width)
+    -> size_t {
+  return spec_width > width ? spec_width - width : 0;
+}
+
 // Writes the output of f, padded according to format specifications in specs.
 // size: output size in code units.
 // width: output display width in (terminal) column positions.
@@ -3288,7 +3293,7 @@ FMT_CONSTEXPR auto write_padded(OutputIt out, const format_specs& specs,
   static_assert(default_align == align::left || default_align == align::right,
                 "");
   unsigned spec_width = to_unsigned(specs.width);
-  size_t padding = spec_width > width ? spec_width - width : 0;
+  size_t padding = compute_padding(spec_width, width);
   // Shifts are encoded as string literals because static constexpr is not
   // supported in constexpr functions.
   auto* shifts =
